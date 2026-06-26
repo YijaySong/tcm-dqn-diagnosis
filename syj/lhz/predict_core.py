@@ -1,28 +1,25 @@
 # -*- coding: utf-8 -*-
-"""辨证预测脚本文件。
+"""预测共享核心函数。
 
-负责加载main.py训练并保存的DQN模型checkpoint，构建症状和证候要素映射，
-接收命令行或交互式输入的刻下症，并输出模型推荐的证候要素。
+供predict_nontrace.py和predict_trace.py复用，负责加载模型、构建映射、
+执行普通预测和逐步轨迹预测。
 """
 
 import os
-import sys
 import numpy as np
 import torch
 import torch.nn as nn
 
-# ---------- 设备 ----------
+STOP_ACTION = "停止"
+NEG_INF = -1e9
+
 device = torch.device(
     "cuda" if torch.cuda.is_available() else
     "mps" if torch.backends.mps.is_available() else
     "cpu"
 )
 
-STOP_ACTION = "停止"
-NEG_INF = -1e9
 
-
-# ---------- DQN网络（与训练时完全一致） ----------
 class DQN(nn.Module):
     def __init__(self, state_vector_len, n_actions, n_units=128, n_units2=64, dropout=0.1):
         super(DQN, self).__init__()
@@ -39,7 +36,6 @@ class DQN(nn.Module):
         return self.net(x)
 
 
-# ---------- 环境（与训练时一致，用于构建状态空间和动作空间映射） ----------
 class Environment(object):
     def __init__(self, symptoms, Se):
         self.state_space = {}
@@ -76,14 +72,13 @@ def default_data_path():
     return os.path.join(project_root(), 'dataset', 'lhz_data.txt')
 
 
-# ---------- 数据加载（兼容旧state_dict模型） ----------
 def get_tcm_data(filename):
     """读取数据集，构建症状和证候要素映射。"""
     if not os.path.exists(filename):
         raise FileNotFoundError(f"未找到数据集文件：{filename}")
 
     with open(filename, 'r', encoding='utf-8') as file:
-        file.readline()  # 跳过标题行
+        file.readline()
         lines = [line.strip() for line in file if line.strip()]
 
     symptom_set = set()
@@ -117,7 +112,7 @@ def get_tcm_data(filename):
 
 
 def resolve_model_path(model_path=None):
-    """解析模型路径；默认优先使用训练脚本在 syj/lhz 下保存的最终模型。"""
+    """解析模型路径；默认优先使用syj/lhz目录下保存的模型。"""
     if model_path:
         if os.path.exists(model_path):
             return model_path
@@ -149,11 +144,7 @@ def load_checkpoint(model_path):
 
 
 def load_recommender(model_path=None, data_path=None, nn_units=128, nn_units2=64, dropout=0.1):
-    """加载训练好的推荐器，返回 (model, env, metadata)。
-
-    新训练脚本保存的是checkpoint字典，包含模型权重和症状/证候要素映射；旧模型若只是
-    state_dict，则会重新读取数据集构建映射。
-    """
+    """加载训练好的推荐器，返回(model, env, metadata)。"""
     resolved_model_path = resolve_model_path(model_path)
     if not os.path.exists(resolved_model_path):
         raise FileNotFoundError(f"未找到模型文件：{resolved_model_path}")
@@ -182,7 +173,6 @@ def load_recommender(model_path=None, data_path=None, nn_units=128, nn_units2=64
     return model, env, metadata
 
 
-# ---------- 预测核心函数 ----------
 def mask_selected_actions(q_values, selected_actions, env):
     """将已选动作的Q值设为负无穷，避免重复选择。"""
     masked = q_values.clone()
@@ -193,9 +183,7 @@ def mask_selected_actions(q_values, selected_actions, env):
 
 
 def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=None):
-    """
-    给定症状列表，模型自主选择证候要素，直到选择"停止"或达到上限。
-    """
+    """给定症状列表，模型自主选择证候要素，直到选择停止或达到上限。"""
     model.eval()
     state_np = env.reset(symptoms_list)
     selected_actions = []
@@ -212,7 +200,6 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
             q_values = mask_selected_actions(q_values, selected_actions, env)
 
             action_idx = q_values.max(1).indices.item()
-
             if action_idx == env.stop_action:
                 break
 
@@ -225,6 +212,77 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
     return [env.action_space[idx] for idx in selected_actions]
 
 
+def top_candidates_from_q_values(q_values, env, candidate_topk):
+    """从已完成mask的Q值中提取候选动作排名。"""
+    candidate_topk = max(0, int(candidate_topk or 0))
+    if candidate_topk <= 0:
+        return []
+
+    row = q_values[0]
+    valid_count = int((row > NEG_INF / 2).sum().item())
+    if valid_count <= 0:
+        return []
+
+    topk = min(candidate_topk, valid_count, len(env.action_space))
+    values, indices = torch.topk(row, k=topk)
+    candidates = []
+    for value, action_idx in zip(values.tolist(), indices.tolist()):
+        if value <= NEG_INF / 2:
+            continue
+        candidates.append({
+            'name': env.action_space[action_idx],
+            'action_index': int(action_idx),
+            'q_value': float(value),
+        })
+    return candidates
+
+
+def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_actions=None, candidate_topk=0):
+    """给定症状列表，返回模型逐步选择证候要素的轨迹。"""
+    model.eval()
+    state_np = env.reset(symptoms_list)
+    selected_actions = []
+    steps = []
+    max_actions = env.Se_action_num if max_actions is None else min(max_actions, env.Se_action_num)
+
+    with torch.no_grad():
+        while len(selected_actions) < max_actions:
+            state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
+            q_values = model(state_tensor)
+
+            mask_stop = force_top_k is not None and len(selected_actions) < force_top_k
+            if mask_stop:
+                q_values[0, env.stop_action] = NEG_INF
+            q_values = mask_selected_actions(q_values, selected_actions, env)
+
+            action_idx = q_values.max(1).indices.item()
+            selected_before = [env.action_space[idx] for idx in selected_actions]
+            is_stop = action_idx == env.stop_action
+            steps.append({
+                'step': len(steps) + 1,
+                'selected_before': selected_before,
+                'action': env.action_space[action_idx],
+                'action_index': int(action_idx),
+                'is_stop': is_stop,
+                'q_value': float(q_values[0, action_idx].item()),
+                'top_candidates': top_candidates_from_q_values(q_values, env, candidate_topk),
+            })
+
+            if is_stop:
+                break
+
+            selected_actions.append(action_idx)
+            state_np[env.symp_len + action_idx] = 1
+
+            if force_top_k is not None and len(selected_actions) >= force_top_k:
+                break
+
+    return {
+        'recommendations': [env.action_space[idx] for idx in selected_actions],
+        'steps': steps,
+    }
+
+
 def normalize_symptoms(symptoms):
     if isinstance(symptoms, str):
         symptoms = symptoms.replace('，', ',')
@@ -235,107 +293,31 @@ def normalize_symptoms(symptoms):
     return normalized
 
 
-def recommend_syndrome_elements(symptoms, model_path=None, data_path=None, topk=0):
-    """直接加载模型并推荐证候要素。
-
-    参数:
-        symptoms: 逗号分隔字符串或症状列表。
-        model_path: 模型路径，默认自动查找 syj/lhz/dqn_model.pth。
-        data_path: 旧state_dict模型需要的数据集路径。
-        topk: >0时强制输出Top-k；0时由模型自主停止。
-    """
-    model, env, metadata = load_recommender(model_path=model_path, data_path=data_path)
-    symptoms_list = normalize_symptoms(symptoms)
-    known = [s for s in symptoms_list if s in env.swapped_state_space]
-    unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
-
-    if not known:
-        return {
-            'recommendations': [],
-            'known_symptoms': known,
-            'unknown_symptoms': unknown,
-            'model_path': metadata.get('model_path'),
-        }
-
-    if topk and topk > 0:
-        recommendations = predict_symptoms(model, env, known, force_top_k=topk, max_actions=topk)
-    else:
-        recommendations = predict_symptoms(model, env, known)
-
-    return {
-        'recommendations': recommendations,
-        'known_symptoms': known,
-        'unknown_symptoms': unknown,
-        'model_path': metadata.get('model_path'),
-    }
+def format_selected(names):
+    """格式化证候要素列表，空列表显示为无。"""
+    return ', '.join(names) if names else '无'
 
 
-def print_prediction(result, prefix):
-    if result['unknown_symptoms']:
-        print(f"[警告] 以下症状不在训练集中，将被忽略: {result['unknown_symptoms']}")
-    if not result['known_symptoms']:
-        print("[错误] 没有有效的症状！")
-        return False
-    print(f"{prefix}: {', '.join(result['recommendations']) if result['recommendations'] else '无'}")
-    return True
+def print_trace_prediction(trace_result, known_symptoms, fixed_topk=None):
+    """打印逐步辨证过程。"""
+    print(f"  输入刻下症: {format_selected(known_symptoms)}")
+    if fixed_topk:
+        print(f"  [说明] 固定Top-{fixed_topk}模式：前{fixed_topk}步会屏蔽停止动作，不代表模型自主停止。")
+    print("\n  === DQN辨证过程 ===")
 
+    steps = trace_result.get('steps', [])
+    if not steps:
+        print("  无有效辨证步骤。")
+    for step in steps:
+        print(f"  第{step['step']}步:")
+        print(f"    当前已选证候要素: {format_selected(step['selected_before'])}")
+        print(f"    模型选择: {step['action']}")
+        candidates = step.get('top_candidates') or []
+        if candidates:
+            ranking = ', '.join(
+                f"{item['name']}({item['q_value']:.4f})" for item in candidates
+            )
+            print(f"    候选排名: {ranking}")
+        print()
 
-# ========== 主程序 ==========
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="DQN辨证预测")
-    parser.add_argument("--model", type=str, default=None,
-                        help="模型权重文件路径（默认自动查找 syj/lhz/dqn_model.pth）")
-    parser.add_argument("--data", type=str, default=None,
-                        help="旧state_dict模型需要的数据集路径（默认: dataset/lhz_data.txt）")
-    parser.add_argument("--symptoms", type=str, default=None,
-                        help="症状，逗号分隔（如: 胸闷,胸痛,畏寒）")
-    parser.add_argument("--topk", type=int, default=0,
-                        help="强制输出Top-k个证候要素（0=自主停止）")
-    parser.add_argument("--interactive", action="store_true",
-                        help="交互模式，逐行输入症状")
-    args = parser.parse_args()
-
-    model, env, metadata = load_recommender(model_path=args.model, data_path=args.data)
-    print(f"加载模型: {metadata['model_path']}")
-    print(f"  刻下症数: {env.symp_len}, 证候要素数: {env.Se_action_num}")
-    print(f"  状态向量长度: {len(env.state_space)}, 动作数: {len(env.action_space)}")
-    print("  模型加载成功！")
-
-    def run_once(symptoms_text):
-        symptoms_list = normalize_symptoms(symptoms_text)
-        known = [s for s in symptoms_list if s in env.swapped_state_space]
-        unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
-        if unknown:
-            print(f"  [警告] 以下症状不在训练集中，将被忽略: {unknown}")
-        if not known:
-            print("  [错误] 没有有效的症状！")
-            return
-
-        if args.topk > 0:
-            result = predict_symptoms(model, env, known, force_top_k=args.topk, max_actions=args.topk)
-            print(f"  Top-{args.topk}推荐证候要素: {', '.join(result) if result else '无'}")
-        else:
-            result_auto = predict_symptoms(model, env, known)
-            result_top2 = predict_symptoms(model, env, known, force_top_k=2, max_actions=2)
-            print(f"  自主停止推荐: {', '.join(result_auto) if result_auto else '无'}")
-            print(f"  Top-2推荐:     {', '.join(result_top2) if result_top2 else '无'}")
-
-    if args.interactive or not args.symptoms:
-        print("\n=== 交互预测模式 ===")
-        print("输入症状（逗号分隔），输入 q 退出")
-        print("可用症状示例: 胸闷, 胸痛, 畏寒, 纳呆, 舌淡, 舌苔白, 细脉, 弱脉\n")
-        while True:
-            user_input = input("请输入症状: ").strip()
-            if user_input.lower() == 'q':
-                print("退出。")
-                break
-            if not user_input:
-                continue
-            run_once(user_input)
-            print()
-    else:
-        run_once(args.symptoms)
-        if not normalize_symptoms(args.symptoms):
-            sys.exit(1)
+    print(f"  最终推荐证候要素: {format_selected(trace_result.get('recommendations', []))}")
