@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """训练日志绘图文件。
 
-负责解析DQN训练过程中生成的日志文件，提取reward、loss和测试集评估指标，
-并绘制训练曲线及最终测试指标图，便于观察模型训练效果。
+负责解析DQN训练过程中生成的日志文件，提取reward、loss和测试集评估指标。
+输出时只把最重要的五个模型指标（sample_f1、sample_recall、sample_precision、
+exact_match、macro_f1）画成图；其他辅助指标和训练摘要用表格展示。默认保存为
+多页PDF，便于分开展示核心图表和辅助信息。
 """
 import os
 import glob
@@ -11,9 +13,32 @@ import sys
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
+
+CORE_METRICS = [
+    ('f1', 'Sample F1'),
+    ('recall', 'Sample Recall'),
+    ('precision', 'Sample Precision'),
+    ('exact_match', 'Exact Match'),
+    ('macro_f1', 'Macro F1'),
+]
+
+AUX_METRICS = [
+    ('jaccard', 'Sample Jaccard'),
+    ('label_accuracy', 'Label Accuracy'),
+    ('hamming_loss', 'Hamming Loss'),
+    ('micro_f1', 'Micro F1'),
+    ('hit_rate', 'Hit Rate'),
+    ('empty_prediction_rate', 'Empty Prediction Rate'),
+    ('avg_selected_count', 'Avg Selected Count'),
+    ('avg_true_count', 'Avg True Count'),
+    ('avg_cardinality_error', 'Avg Count Error'),
+    ('avg_over_select', 'Avg Over-select'),
+    ('avg_under_select', 'Avg Under-select'),
+]
 
 
 def parse_log(log_path):
@@ -45,7 +70,20 @@ def parse_log(log_path):
         top2_metrics = {}
 
     def parse_metric_line(line, target):
-        m = re.search(r'\*\*样本Jaccard avg:([\d.]+)', line)
+        m = re.search(
+            r'\*\*核心指标 sample_f1:([\d.]+), sample_recall:([\d.]+), '
+            r'sample_precision:([\d.]+), exact_match:([\d.]+), macro_f1:([\d.]+)',
+            line
+        )
+        if m:
+            target['f1'] = float(m.group(1))
+            target['sample_f1'] = float(m.group(1))
+            target['recall'] = float(m.group(2))
+            target['precision'] = float(m.group(3))
+            target['exact_match'] = float(m.group(4))
+            target['macro_f1'] = float(m.group(5))
+
+        m = re.search(r'\*\*样本Jaccard(?:/集合准确率|\(sample_jaccard\))? avg:([\d.]+)', line)
         if m:
             target['jaccard'] = float(m.group(1))
 
@@ -56,10 +94,14 @@ def parse_log(log_path):
             target['f1'] = float(m.group(3))
             target['sample_f1'] = float(m.group(3))
 
-        m = re.search(r'\*\*ExactMatch:([\d.]+), HammingLoss:([\d.]+)', line)
+        m = re.search(r'\*\*ExactMatch(?:/子集准确率|/严格准确率)?(?:\(exact_match\))?:([\d.]+).*HammingLoss(?:\(hamming_loss\))?:([\d.]+)', line)
         if m:
             target['exact_match'] = float(m.group(1))
             target['hamming_loss'] = float(m.group(2))
+
+        m = re.search(r'标签级Accuracy\(label_accuracy\):([\d.]+)', line)
+        if m:
+            target['label_accuracy'] = float(m.group(1))
 
         m = re.search(r'\*\*Micro P/R/F1:([\d.]+)/([\d.]+)/([\d.]+)', line)
         if m:
@@ -68,6 +110,23 @@ def parse_log(log_path):
         m = re.search(r'\*\*Macro P/R/F1:([\d.]+)/([\d.]+)/([\d.]+)', line)
         if m:
             target['macro_f1'] = float(m.group(3))
+
+        m = re.search(r'\*\*HitRate\(hit_rate\):([\d.]+), EmptyPredictionRate\(empty_prediction_rate\):([\d.]+)', line)
+        if m:
+            target['hit_rate'] = float(m.group(1))
+            target['empty_prediction_rate'] = float(m.group(2))
+
+        m = re.search(
+            r'\*\*平均推荐数:([\d.]+), 平均真实数:([\d.]+), 平均数量误差:([\d.]+), '
+            r'平均多选数:([\d.]+), 平均漏选数:([\d.]+)',
+            line
+        )
+        if m:
+            target['avg_selected_count'] = float(m.group(1))
+            target['avg_true_count'] = float(m.group(2))
+            target['avg_cardinality_error'] = float(m.group(3))
+            target['avg_over_select'] = float(m.group(4))
+            target['avg_under_select'] = float(m.group(5))
 
     for line in lines:
         line = line.strip()
@@ -136,127 +195,144 @@ def parse_log(log_path):
     return episodes, final_metrics
 
 
+def add_table_page(title, rows):
+    fig, ax = plt.subplots(figsize=(11.69, 8.27))
+    ax.axis('off')
+    ax.set_title(title, fontsize=14, fontweight='bold', pad=16)
+    if not rows:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center', fontsize=12)
+        return fig
+
+    table = ax.table(
+        cellText=rows,
+        colLabels=['Metric', 'Auto Stop', 'Top-2', 'Note'],
+        loc='center',
+        cellLoc='center',
+        colLoc='center',
+        colWidths=[0.25, 0.18, 0.18, 0.32],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1, 1.45)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(weight='bold')
+            cell.set_facecolor('#e9edf5')
+        elif row % 2 == 0:
+            cell.set_facecolor('#f8f9fb')
+    return fig
+
+
+def format_metric(metrics, key):
+    if key not in metrics:
+        return '-'
+    return f"{metrics[key]:.4f}"
+
+
+def save_figures(figures, save_path):
+    if not save_path:
+        plt.show()
+        return
+
+    root, ext = os.path.splitext(save_path)
+    ext = ext.lower()
+    if ext == '.pdf':
+        with PdfPages(save_path) as pdf:
+            for fig in figures:
+                pdf.savefig(fig, bbox_inches='tight')
+        print(f"多页PDF已保存至: {save_path}")
+    else:
+        for idx, fig in enumerate(figures, start=1):
+            page_path = f"{root}_page{idx}{ext or '.png'}"
+            fig.savefig(page_path, dpi=150, bbox_inches='tight')
+            print(f"图片第{idx}页已保存至: {page_path}")
+    plt.show()
+
+
 def plot_metrics(episodes, final_metrics=None, save_path=None):
-    """绘制训练指标曲线和最终测试集指标。"""
+    """核心五个指标用图展示，辅助指标用表格展示。"""
     final_metrics = final_metrics or {'auto': {}, 'top2': {}}
     if not episodes and not final_metrics.get('auto') and not final_metrics.get('top2'):
         print("未找到有效的训练或测试指标数据")
         return
 
-    _, axes = plt.subplots(2, 3, figsize=(16, 10))
-
-    if episodes:
-        eps = [e['episode'] for e in episodes]
-        rewards = [e['avg_reward'] for e in episodes]
-        losses = [e['avg_loss'] for e in episodes]
-
-        axes[0, 0].plot(eps, rewards, 'b-o', markersize=4)
-        axes[0, 0].set_title('Avg Reward per Episode')
-        axes[0, 0].set_xlabel('Episode')
-        axes[0, 0].set_ylabel('Avg Reward')
-        axes[0, 0].grid(True, alpha=0.3)
-
-        axes[0, 1].plot(eps, losses, 'r-o', markersize=4)
-        axes[0, 1].set_title('Avg Loss per Episode')
-        axes[0, 1].set_xlabel('Episode')
-        axes[0, 1].set_ylabel('Avg Loss')
-        axes[0, 1].grid(True, alpha=0.3)
-    else:
-        axes[0, 0].axis('off')
-        axes[0, 1].axis('off')
-
+    figures = []
     has_episode_eval = any(e.get('auto') or e.get('top2') for e in episodes)
     if has_episode_eval:
+        fig, axes = plt.subplots(3, 2, figsize=(12, 12))
+        axes = axes.flatten()
         eps = [e['episode'] for e in episodes]
-        auto_f1 = [e.get('auto', {}).get('f1', 0) for e in episodes]
-        auto_em = [e.get('auto', {}).get('exact_match', 0) for e in episodes]
-        auto_micro_f1 = [e.get('auto', {}).get('micro_f1', 0) for e in episodes]
-        auto_macro_f1 = [e.get('auto', {}).get('macro_f1', 0) for e in episodes]
-        top2_f1 = [e.get('top2', {}).get('f1', 0) for e in episodes]
-        top2_em = [e.get('top2', {}).get('exact_match', 0) for e in episodes]
-
-        axes[0, 2].plot(eps, auto_f1, 'g-o', markersize=4, label='Auto Stop')
-        axes[0, 2].plot(eps, top2_f1, 'orange', marker='s', markersize=4, label='Top-2')
-        axes[0, 2].set_title('Episode Sample F1')
-        axes[0, 2].set_xlabel('Episode')
-        axes[0, 2].set_ylabel('F1')
-        axes[0, 2].legend()
-        axes[0, 2].grid(True, alpha=0.3)
-
-        axes[1, 0].plot(eps, auto_em, 'g-o', markersize=4, label='Auto Stop')
-        axes[1, 0].plot(eps, top2_em, 'orange', marker='s', markersize=4, label='Top-2')
-        axes[1, 0].set_title('Episode Exact Match')
-        axes[1, 0].set_xlabel('Episode')
-        axes[1, 0].set_ylabel('Exact Match')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-
-        axes[1, 1].plot(eps, auto_micro_f1, 'c-o', markersize=4, label='Micro F1')
-        axes[1, 1].plot(eps, auto_macro_f1, 'm-s', markersize=4, label='Macro F1')
-        axes[1, 1].set_title('Auto Stop: Micro / Macro F1')
-        axes[1, 1].set_xlabel('Episode')
-        axes[1, 1].set_ylabel('F1')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True, alpha=0.3)
-    else:
-        axes[0, 2].axis('off')
-        axes[1, 0].axis('off')
-        axes[1, 1].axis('off')
+        for idx, (key, label) in enumerate(CORE_METRICS):
+            ax = axes[idx]
+            auto_values = [e.get('auto', {}).get(key, e.get('auto', {}).get('sample_f1' if key == 'f1' else key, 0)) for e in episodes]
+            top2_values = [e.get('top2', {}).get(key, e.get('top2', {}).get('sample_f1' if key == 'f1' else key, 0)) for e in episodes]
+            ax.plot(eps, auto_values, 'g-o', markersize=4, label='Auto Stop')
+            ax.plot(eps, top2_values, color='orange', marker='s', markersize=4, label='Top-2')
+            ax.set_title(label)
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Score')
+            ax.set_ylim(0, 1)
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        axes[-1].axis('off')
+        fig.suptitle('Core Metrics Across Episodes', fontsize=14, fontweight='bold')
+        fig.tight_layout()
+        figures.append(fig)
 
     auto = final_metrics.get('auto', {})
     top2 = final_metrics.get('top2', {})
     if auto or top2:
-        metric_names = ['f1', 'exact_match', 'micro_f1', 'macro_f1']
-        labels = ['Sample F1', 'Exact Match', 'Micro F1', 'Macro F1']
-        x = range(len(metric_names))
+        fig, ax = plt.subplots(figsize=(10, 6))
+        metric_names = [key for key, _ in CORE_METRICS]
+        labels = [label for _, label in CORE_METRICS]
+        x = list(range(len(metric_names)))
         width = 0.35
         auto_values = [auto.get(name, 0.0) for name in metric_names]
         top2_values = [top2.get(name, 0.0) for name in metric_names]
+        ax.bar([i - width / 2 for i in x], auto_values, width, label='Auto Stop')
+        ax.bar([i + width / 2 for i in x], top2_values, width, label='Top-2')
+        ax.set_title('Final Test Core Metrics')
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=20)
+        ax.set_ylim(0, 1)
+        ax.legend()
+        ax.grid(True, axis='y', alpha=0.3)
+        fig.tight_layout()
+        figures.append(fig)
 
-        axes[1, 1].clear()
-        axes[1, 1].bar([i - width / 2 for i in x], auto_values, width, label='Auto Stop')
-        axes[1, 1].bar([i + width / 2 for i in x], top2_values, width, label='Top-2')
-        axes[1, 1].set_title('Final Test Metrics')
-        axes[1, 1].set_xticks(list(x))
-        axes[1, 1].set_xticklabels(labels, rotation=20)
-        axes[1, 1].set_ylim(0, 1)
-        axes[1, 1].legend()
-        axes[1, 1].grid(True, axis='y', alpha=0.3)
-
-    axes[1, 2].axis('off')
-    text_lines = []
+    training_rows = []
     if episodes:
-        text_lines.append(f"Episodes: {len(episodes)}")
-        text_lines.append(f"Last Reward: {episodes[-1]['avg_reward']:.4f}")
-        text_lines.append(f"Last Loss: {episodes[-1]['avg_loss']:.6f}")
-    if auto:
-        text_lines.extend([
-            "",
-            "Final Test - Auto Stop",
-            f"Sample F1: {auto.get('f1', 0):.4f}",
-            f"Exact Match: {auto.get('exact_match', 0):.4f}",
-            f"Micro F1: {auto.get('micro_f1', 0):.4f}",
-            f"Macro F1: {auto.get('macro_f1', 0):.4f}",
+        best_reward = max(episodes, key=lambda item: item['avg_reward'])
+        min_loss = min(episodes, key=lambda item: item['avg_loss'])
+        training_rows.extend([
+            ['Episodes', str(len(episodes)), '-', '训练轮数'],
+            ['Last Reward', f"{episodes[-1]['avg_reward']:.4f}", '-', '最后一轮平均奖励'],
+            ['Best Reward', f"{best_reward['avg_reward']:.4f}", '-', f"Episode {best_reward['episode']}"],
+            ['Last Loss', f"{episodes[-1]['avg_loss']:.6f}", '-', '最后一轮平均损失'],
+            ['Min Loss', f"{min_loss['avg_loss']:.6f}", '-', f"Episode {min_loss['episode']}"],
         ])
-    if top2:
-        text_lines.extend([
-            "",
-            "Final Test - Top-2",
-            f"Sample F1: {top2.get('f1', 0):.4f}",
-            f"Exact Match: {top2.get('exact_match', 0):.4f}",
-            f"Micro F1: {top2.get('micro_f1', 0):.4f}",
-            f"Macro F1: {top2.get('macro_f1', 0):.4f}",
-        ])
-    axes[1, 2].text(0.05, 0.95, '\n'.join(text_lines), fontsize=11, family='monospace',
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        figures.append(add_table_page('Training Summary Table', training_rows))
 
-    plt.suptitle('DQN Training and Test Metrics', fontsize=14, fontweight='bold')
-    plt.tight_layout()
+    if auto or top2:
+        aux_rows = []
+        notes = {
+            'jaccard': '集合重合度，越高越好',
+            'label_accuracy': '标签位准确率，稀疏标签下仅辅助参考',
+            'hamming_loss': '标签位错误率，越低越好',
+            'micro_f1': '高频标签整体F1，越高越好',
+            'hit_rate': '至少命中一个真实标签比例，越高越好',
+            'empty_prediction_rate': '空预测比例，通常越低越好',
+            'avg_selected_count': '平均推荐数量',
+            'avg_true_count': '平均真实数量',
+            'avg_cardinality_error': '推荐数量误差，越低越好',
+            'avg_over_select': '平均多选数，越低越好',
+            'avg_under_select': '平均漏选数，越低越好',
+        }
+        for key, label in AUX_METRICS:
+            aux_rows.append([label, format_metric(auto, key), format_metric(top2, key), notes.get(key, '')])
+        figures.append(add_table_page('Auxiliary Final Test Metrics Table', aux_rows))
 
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"图片已保存至: {save_path}")
-    plt.show()
+    save_figures(figures, save_path)
 
 
 if __name__ == '__main__':
@@ -282,5 +358,5 @@ if __name__ == '__main__':
             print(f"  Episode {ep_data['episode']}: "
                   f"reward={ep_data['avg_reward']:.4f}, loss={ep_data['avg_loss']:.6f}, "
                   f"auto_keys={list(ep_data.get('auto', {}).keys())}, top2_keys={list(ep_data.get('top2', {}).keys())}")
-    save_path = log_path.replace('.log', '_metrics.png')
+    save_path = log_path.replace('.log', '_metrics.pdf')
     plot_metrics(episodes, final_metrics, save_path)

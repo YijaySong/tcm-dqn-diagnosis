@@ -274,8 +274,8 @@ class DQNTrainer(object):
         return [self.env.action_space[action_idx] for action_idx in selected_actions]
 
 
-def save_checkpoints(model_dir, policy_net, symptoms, Se, nn_units, nn_units2, dropout,
-                     state_vector_len, n_actions, seed, test_ratio, test_metrics):
+def save_checkpoint(model_dir, policy_net, symptoms, Se, nn_units, nn_units2, dropout,
+                    state_vector_len, n_actions, seed, test_ratio, test_metrics):
     checkpoint = {
         'model_state_dict': policy_net.state_dict(),
         'symptoms': symptoms,
@@ -289,5 +289,6 @@ def save_checkpoints(model_dir, policy_net, symptoms, Se, nn_units, nn_units2, d
         'test_ratio': test_ratio,
         'test_metrics': test_metrics,
     }
-    for model_name in ('dqn_model.pth', 'dqn_model_best.pth', 'dqn_model_last.pth'):
-        torch.save(checkpoint, os.path.join(model_dir, model_name))
+    model_path = os.path.join(model_dir, 'dqn_model.pth')
+    torch.save(checkpoint, model_path)
+    return model_path

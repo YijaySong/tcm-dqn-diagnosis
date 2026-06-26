@@ -12,11 +12,11 @@ from datetime import datetime
 import torch.optim as optim
 
 from constants import device
-from data import compute_Se_weights, get_tcm_data, stratified_split_data
+from data import compute_Se_weights, export_split_data, get_tcm_data, stratified_split_data, strip_sample_id
 from env import Environment
 from memory import ReplayMemory
 from model import DQN
-from trainer import DQNTrainer, save_checkpoints
+from trainer import DQNTrainer, save_checkpoint
 from utils import create_logger, default_data_path, set_seed
 
 
@@ -64,9 +64,16 @@ def main():
     tcm_data, symptoms, Se, max_Se_len = get_tcm_data(data_path, max_Se_num=args.max_Se_num, logger=logger)
     env = Environment(symptoms, Se)
 
-    training_tcm_data, test_tcm_data = stratified_split_data(
+    training_tcm_data_raw, test_tcm_data_raw = stratified_split_data(
         tcm_data, args.seed, test_ratio=args.test_ratio, logger=logger
     )
+    export_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'split_data')
+    export_split_data(
+        training_tcm_data_raw, test_tcm_data_raw, export_dir,
+        args.seed, args.test_ratio, logger=logger
+    )
+    training_tcm_data = strip_sample_id(training_tcm_data_raw)
+    test_tcm_data = strip_sample_id(test_tcm_data_raw)
     env.set_Se_weights(compute_Se_weights(training_tcm_data, env, logger=logger))
 
     logger.info(f"训练数据数量:{len(training_tcm_data)}, 测试数据数量:{len(test_tcm_data)}, 测试集比例:{args.test_ratio:.2f}")
@@ -121,18 +128,18 @@ def main():
     )
 
     model_dir = os.path.dirname(os.path.abspath(__file__))
-    save_checkpoints(
+    model_path = save_checkpoint(
         model_dir, policy_net, symptoms, Se, args.nn_units, args.nn_units2,
         args.dropout, state_vector_len, n_actions, args.seed, args.test_ratio, test_metrics
     )
-    print(f"模型已保存至: {model_dir}")
-    print(f"测试集自主停止sample_f1={test_metrics['auto']['sample_f1']:.4f}")
+    print(f"模型已保存至: {model_path}")
+    # print(f"测试集自主停止sample_f1={test_metrics['auto']['sample_f1']:.4f}")
 
-    symptoms_str = '胸闷,胸痛,畏寒,纳呆,睡后易醒,大便艰难,舌淡,舌边齿痕,舌苔白,舌苔薄,细脉,弱脉'
-    predicted_Se = trainer.predict_symptoms(symptoms_str)
-    predicted_Se_top2 = trainer.predict_symptoms(symptoms_str, force_top_k=2, max_actions=2)
-    print(f'推荐证候要素(自主停止): {",".join(predicted_Se) if predicted_Se else "无"}')
-    print(f'推荐证候要素(固定Top-2诊断): {",".join(predicted_Se_top2) if predicted_Se_top2 else "无"}')
+    # symptoms_str = '胸闷,胸痛,畏寒,纳呆,睡后易醒,大便艰难,舌淡,舌边齿痕,舌苔白,舌苔薄,细脉,弱脉'
+    # predicted_Se = trainer.predict_symptoms(symptoms_str)
+    # predicted_Se_top2 = trainer.predict_symptoms(symptoms_str, force_top_k=2, max_actions=2)
+    # print(f'推荐证候要素(自主停止): {",".join(predicted_Se) if predicted_Se else "无"}')
+    # print(f'推荐证候要素(固定Top-2诊断): {",".join(predicted_Se_top2) if predicted_Se_top2 else "无"}')
 
 
 if __name__ == "__main__":

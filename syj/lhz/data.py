@@ -2,9 +2,11 @@
 """数据处理文件。
 
 负责读取dataset/lhz_data.txt，构建刻下症和证候要素映射，划分训练集/测试集，
-并根据训练集标签频次计算证候要素奖励权重。
+导出本次划分结果，并根据训练集标签频次计算证候要素奖励权重。
 """
 
+import csv
+import glob
 import math
 import os
 import random
@@ -70,7 +72,7 @@ def get_tcm_data(filename, max_Se_num=0, logger=None):
             if symp not in symptom_set:
                 symptom_map[len(symptom_set)] = symp
                 symptom_set.add(symp)
-        tuples4gen.append((symptoms, Se_list))
+        tuples4gen.append((symptoms, Se_list, parts[0]))
 
     if logger is not None:
         logger.info(f"全量刻下症数: {len(symptom_map)}, 全量证候要素数: {len(Se_map)}")
@@ -100,16 +102,17 @@ def get_tcm_data(filename, max_Se_num=0, logger=None):
 
     max_Se_len = 0
     for item in tuples4gen:
-        if set(item[1]).issubset(top_n_Se):
-            filt_tuples4gen.append(item)
-            if len(item[1]) > max_Se_len:
-                max_Se_len = len(item[1])
+        symptoms, Se_list, source_id = item
+        if set(Se_list).issubset(top_n_Se):
+            filt_tuples4gen.append((symptoms, Se_list, source_id))
+            if len(Se_list) > max_Se_len:
+                max_Se_len = len(Se_list)
 
-            for Se in item[1]:
+            for Se in Se_list:
                 if Se not in Se_set:
                     filt_Se_map[len(Se_set)] = Se
                     Se_set.add(Se)
-            for symp in item[0]:
+            for symp in symptoms:
                 if symp not in symptom_set:
                     filt_symptom_map[len(symptom_set)] = symp
                     symptom_set.add(symp)
@@ -170,6 +173,51 @@ def stratified_split_data(tcm_data, seed, test_ratio=0.2, logger=None):
         logger.info("使用内置训练集/测试集划分")
         logger.info(f"数据集总量:{len(tcm_data)}, 训练集:{len(train_data)}, 测试集:{len(test_data)}")
     return train_data, test_data
+
+
+def strip_sample_id(data):
+    """去掉导出用的原始样本编号，只保留训练需要的(症状列表, 证候要素列表)。"""
+    stripped = []
+    for item in data:
+        symptoms, Se_names = item[0], item[1]
+        stripped.append((symptoms, Se_names))
+    return stripped
+
+
+def export_split_data(train_data, test_data, output_dir, seed, test_ratio, logger=None):
+    """导出本次训练/测试划分，方便人工查看每条样本属于哪个集合。"""
+    os.makedirs(output_dir, exist_ok=True)
+    for old_path in glob.glob(os.path.join(output_dir, 'train_data_seed*_test*.csv')):
+        os.remove(old_path)
+    for old_path in glob.glob(os.path.join(output_dir, 'test_data_seed*_test*.csv')):
+        os.remove(old_path)
+
+    train_path = os.path.join(output_dir, "train_data.csv")
+    test_path = os.path.join(output_dir, "test_data.csv")
+
+    def write_csv(path, data):
+        with open(path, 'w', encoding='utf-8-sig', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['split_index', 'source_id', 'symptom', 'Se'])
+            for split_index, item in enumerate(data, start=1):
+                symptoms = item[0]
+                Se_names = item[1]
+                source_id = item[2] if len(item) >= 3 else ''
+                writer.writerow([
+                    split_index,
+                    source_id,
+                    ','.join(symptoms),
+                    ','.join(Se_names),
+                ])
+
+    write_csv(train_path, train_data)
+    write_csv(test_path, test_data)
+
+    if logger is not None:
+        logger.info(f"训练集明细已导出并覆盖: {train_path}")
+        logger.info(f"测试集明细已导出并覆盖: {test_path}")
+        logger.info(f"本次划分参数: seed={seed}, test_ratio={test_ratio:.2f}")
+    return train_path, test_path
 
 
 def compute_Se_weights(training_data, env, logger=None):

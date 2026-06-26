@@ -3,6 +3,38 @@
 
 负责在测试集上调用训练好的DQN策略进行自主停止预测和固定Top-2预测，
 并计算样本级、标签级、多标签整体Precision/Recall/F1等评估指标。
+
+最重要的评估指标优先看这几个：
+1. 样本F1（sample_f1）：每个病例先算Precision/Recall/F1再平均，
+   综合衡量错选和漏选，是本任务最直观的核心指标，越高越好。
+2. 样本Recall（sample_recall）：每个病例真实证候要素有多少被找回，
+   重点反映漏诊/漏选情况，越高越好。
+3. 样本Precision（sample_precision）：每个病例推荐出的证候要素有多少是真的，
+   重点反映误诊/错选情况，越高越好。
+4. ExactMatch / 严格准确率（exact_match）：预测集合与真实集合完全一致的病例比例，
+   是最严格的准确率，越高越好，但多标签任务中通常会偏低。
+5. Macro F1（macro_f1）：先算每个证候要素标签的F1再平均，更能反映低频标签表现，
+   越高越好。
+
+辅助诊断指标：
+6. 样本Jaccard（sample_jaccard）：预测集合与真实集合的交并比，衡量集合重合程度，
+   越高越好；它和sample_f1含义接近，因此主要作为辅助参考。
+7. 标签级Accuracy（label_accuracy）：所有“病例-标签”二分类位置中预测正确的比例，
+   越高越好；标签稀疏时容易被大量真阴性抬高，所以不能单独作为核心指标。
+8. HammingLoss（hamming_loss）：所有“病例-标签”位置中预测错误的比例，
+   是标签级错误率，越低越好。
+9. Micro Precision / Recall / F1（micro_precision, micro_recall, micro_f1）：
+   把所有标签的TP/FP/FN汇总后计算，更受高频标签影响，越高越好。
+10. HitRate（hit_rate）：每个病例至少命中一个真实证候要素的比例，
+    反映模型是否有基本命中能力，越高越好。
+11. EmptyPredictionRate（empty_prediction_rate）：模型没有推荐任何证候要素的病例比例，
+    通常越低越好。
+12. 平均推荐数 / 平均真实数（avg_selected_count, avg_true_count）：
+    用于观察模型整体推荐数量是否偏多或偏少，本身无绝对好坏。
+13. 平均数量误差 / 平均多选数 / 平均漏选数（avg_cardinality_error,
+    avg_over_select, avg_under_select）：反映预测数量偏差，越低越好。
+14. 标签级P/R/F1/Support/PredCount（日志中逐标签输出；数组变量: label_p, label_r,
+    label_f, label_support, label_pred_count）：定位每个证候要素预测好坏；P/R/F1越高越好。
 """
 
 import importlib
@@ -39,6 +71,17 @@ def eval_f1(precision, recall):
     return 2 * precision * recall / (precision + recall)
 
 
+def safe_divide(numerator, denominator):
+    numerator = np.asarray(numerator, dtype=float)
+    denominator = np.asarray(denominator, dtype=float)
+    return np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator, dtype=float),
+        where=denominator != 0
+    )
+
+
 def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger):
     n_test = len(true_name_sets)
     y_pred = np.array([actions_to_multihot(env, actions) for actions in pred_action_sets])
@@ -52,6 +95,10 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
     selected_count = []
     true_count = []
     cardinality_error = []
+    over_select_count = []
+    under_select_count = []
+    hit_match = []
+    empty_prediction = []
 
     for pred_actions, true_names in zip(pred_action_sets, true_name_sets):
         pred_names = [env.action_space[action] for action in pred_actions]
@@ -66,6 +113,18 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         selected_count.append(len(pred_names))
         true_count.append(len(true_names))
         cardinality_error.append(abs(len(pred_names) - len(true_names)))
+        over_select_count.append(max(0, len(pred_names) - len(true_names)))
+        under_select_count.append(max(0, len(true_names) - len(pred_names)))
+        hit_match.append(1 if set(pred_names) & set(true_names) else 0)
+        empty_prediction.append(1 if len(pred_names) == 0 else 0)
+
+    label_tp = (y_true * y_pred).sum(axis=0)
+    label_fp = ((1 - y_true) * y_pred).sum(axis=0)
+    label_fn = (y_true * (1 - y_pred)).sum(axis=0)
+    label_tn = ((1 - y_true) * (1 - y_pred)).sum(axis=0)
+    label_support = y_true.sum(axis=0)
+    label_pred_count = y_pred.sum(axis=0)
+    label_accuracy = safe_divide(label_tp + label_tn, label_tp + label_fp + label_fn + label_tn)
 
     if precision_recall_fscore_support is not None and hamming_loss is not None:
         micro_p, micro_r, micro_f, _ = precision_recall_fscore_support(y_true, y_pred, average='micro', zero_division=0)
@@ -73,12 +132,9 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         label_p, label_r, label_f, _ = precision_recall_fscore_support(y_true, y_pred, average=None, zero_division=0)
         hamming = hamming_loss(y_true, y_pred)
     else:
-        label_tp = (y_true * y_pred).sum(axis=0)
-        label_fp = ((1 - y_true) * y_pred).sum(axis=0)
-        label_fn = (y_true * (1 - y_pred)).sum(axis=0)
-        label_p = np.divide(label_tp, label_tp + label_fp, out=np.zeros_like(label_tp, dtype=float), where=(label_tp + label_fp) != 0)
-        label_r = np.divide(label_tp, label_tp + label_fn, out=np.zeros_like(label_tp, dtype=float), where=(label_tp + label_fn) != 0)
-        label_f = np.divide(2 * label_p * label_r, label_p + label_r, out=np.zeros_like(label_p, dtype=float), where=(label_p + label_r) != 0)
+        label_p = safe_divide(label_tp, label_tp + label_fp)
+        label_r = safe_divide(label_tp, label_tp + label_fn)
+        label_f = safe_divide(2 * label_p * label_r, label_p + label_r)
         total_tp = label_tp.sum()
         total_fp = label_fp.sum()
         total_fn = label_fn.sum()
@@ -90,15 +146,30 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         macro_f = float(np.mean(label_f))
         hamming = float(np.not_equal(y_true, y_pred).mean())
 
+    exact_match_avg = float(np.mean(exact_match))
+    label_accuracy_micro = float((label_tp.sum() + label_tn.sum()) / y_true.size) if y_true.size else 0.0
+    hit_rate = float(np.mean(hit_match))
+    empty_prediction_rate = float(np.mean(empty_prediction))
+    avg_over_select = float(np.mean(over_select_count))
+    avg_under_select = float(np.mean(under_select_count))
+
     logger.info(f"**{title}")
-    logger.info(f"**样本Jaccard avg:{np.mean(sample_j):.4f} max:{np.max(sample_j):.4f} min:{np.min(sample_j):.4f}")
+    logger.info(f"**核心指标 sample_f1:{np.mean(sample_f):.4f}, sample_recall:{np.mean(sample_r):.4f}, sample_precision:{np.mean(sample_p):.4f}, exact_match:{exact_match_avg:.4f}, macro_f1:{macro_f:.4f}")
+    logger.info(f"**样本Jaccard(sample_jaccard) avg:{np.mean(sample_j):.4f} max:{np.max(sample_j):.4f} min:{np.min(sample_j):.4f}")
     logger.info(f"**样本Precision avg:{np.mean(sample_p):.4f}, Recall avg:{np.mean(sample_r):.4f}, F1 avg:{np.mean(sample_f):.4f}")
-    logger.info(f"**ExactMatch:{np.mean(exact_match):.4f}, HammingLoss:{hamming:.4f}")
+    logger.info(f"**ExactMatch/严格准确率(exact_match):{exact_match_avg:.4f}, 标签级Accuracy(label_accuracy):{label_accuracy_micro:.4f}, HammingLoss(hamming_loss):{hamming:.4f}")
     logger.info(f"**Micro P/R/F1:{micro_p:.4f}/{micro_r:.4f}/{micro_f:.4f}")
     logger.info(f"**Macro P/R/F1:{macro_p:.4f}/{macro_r:.4f}/{macro_f:.4f}")
-    logger.info(f"**平均推荐数:{np.mean(selected_count):.4f}, 平均真实数:{np.mean(true_count):.4f}, 平均数量误差:{np.mean(cardinality_error):.4f}")
+    logger.info(f"**HitRate(hit_rate):{hit_rate:.4f}, EmptyPredictionRate(empty_prediction_rate):{empty_prediction_rate:.4f}")
+    logger.info(f"**平均推荐数:{np.mean(selected_count):.4f}, 平均真实数:{np.mean(true_count):.4f}, 平均数量误差:{np.mean(cardinality_error):.4f}, 平均多选数:{avg_over_select:.4f}, 平均漏选数:{avg_under_select:.4f}")
     for action_idx in range(env.Se_action_num):
-        logger.info(f"**标签[{env.action_space[action_idx]}] P/R/F1:{label_p[action_idx]:.4f}/{label_r[action_idx]:.4f}/{label_f[action_idx]:.4f}")
+        logger.info(
+            f"**标签[{env.action_space[action_idx]}] "
+            f"P/R/F1/Acc/Support/PredCount:"
+            f"{label_p[action_idx]:.4f}/{label_r[action_idx]:.4f}/{label_f[action_idx]:.4f}/"
+            f"{label_accuracy[action_idx]:.4f}/"
+            f"{int(label_support[action_idx])}/{int(label_pred_count[action_idx])}"
+        )
     logger.info("")
 
     return {
@@ -106,12 +177,22 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         'sample_precision': float(np.mean(sample_p)),
         'sample_recall': float(np.mean(sample_r)),
         'sample_f1': float(np.mean(sample_f)),
-        'exact_match': float(np.mean(exact_match)),
+        'exact_match': exact_match_avg,
+        'label_accuracy': label_accuracy_micro,
         'hamming_loss': float(hamming),
+        'micro_precision': float(micro_p),
+        'micro_recall': float(micro_r),
         'micro_f1': float(micro_f),
+        'macro_precision': float(macro_p),
+        'macro_recall': float(macro_r),
         'macro_f1': float(macro_f),
+        'hit_rate': hit_rate,
+        'empty_prediction_rate': empty_prediction_rate,
         'avg_selected_count': float(np.mean(selected_count)),
+        'avg_true_count': float(np.mean(true_count)),
         'avg_cardinality_error': float(np.mean(cardinality_error)),
+        'avg_over_select': avg_over_select,
+        'avg_under_select': avg_under_select,
         'n_test': n_test,
     }
 

@@ -117,7 +117,7 @@ def get_tcm_data(filename):
 
 
 def resolve_model_path(model_path=None):
-    """解析模型路径；默认优先使用训练脚本在 syj/lhz 下保存的模型。"""
+    """解析模型路径；默认优先使用训练脚本在 syj/lhz 下保存的最终模型。"""
     if model_path:
         if os.path.exists(model_path):
             return model_path
@@ -131,9 +131,7 @@ def resolve_model_path(model_path=None):
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
-        os.path.join(script_dir, 'dqn_model_best.pth'),
         os.path.join(script_dir, 'dqn_model.pth'),
-        os.path.join(project_root(), 'dqn_model_best.pth'),
         os.path.join(project_root(), 'dqn_model.pth'),
     ]
     for candidate in candidates:
@@ -242,7 +240,7 @@ def recommend_syndrome_elements(symptoms, model_path=None, data_path=None, topk=
 
     参数:
         symptoms: 逗号分隔字符串或症状列表。
-        model_path: 模型路径，默认自动查找 syj/lhz/dqn_model_best.pth。
+        model_path: 模型路径，默认自动查找 syj/lhz/dqn_model.pth。
         data_path: 旧state_dict模型需要的数据集路径。
         topk: >0时强制输出Top-k；0时由模型自主停止。
     """
@@ -288,7 +286,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="DQN辨证预测")
     parser.add_argument("--model", type=str, default=None,
-                        help="模型权重文件路径（默认自动查找 syj/lhz/dqn_model_best.pth）")
+                        help="模型权重文件路径（默认自动查找 syj/lhz/dqn_model.pth）")
     parser.add_argument("--data", type=str, default=None,
                         help="旧state_dict模型需要的数据集路径（默认: dataset/lhz_data.txt）")
     parser.add_argument("--symptoms", type=str, default=None,
