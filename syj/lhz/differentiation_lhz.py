@@ -3,7 +3,6 @@
 
 import os
 import math
-import copy
 import numpy as np
 import random
 from collections import namedtuple, deque, Counter
@@ -526,8 +525,11 @@ def evaluate_prediction_set(pred_action_sets, true_name_sets, title):
 
     return {
         'sample_jaccard': float(np.mean(sample_j)),
+        'sample_precision': float(np.mean(sample_p)),
+        'sample_recall': float(np.mean(sample_r)),
         'sample_f1': float(np.mean(sample_f)),
         'exact_match': float(np.mean(exact_match)),
+        'hamming_loss': float(hamming),
         'micro_f1': float(micro_f),
         'macro_f1': float(macro_f),
         'avg_selected_count': float(np.mean(selected_count)),
@@ -536,17 +538,18 @@ def evaluate_prediction_set(pred_action_sets, true_name_sets, title):
     }
 
 
-def evaluate():
-    logger.info("evaluate...")
-    if len(new_test_data) == 0:
-        logger.info("测试数据为空，跳过评估")
-        return {'sample_f1': 0.0, 'exact_match': 0.0}
+def evaluate(eval_data, dataset_name="测试集"):
+    logger.info(f"========== {dataset_name}评估开始 ==========")
+    if len(eval_data) == 0:
+        logger.info(f"{dataset_name}数据为空，跳过评估")
+        empty_metrics = {'sample_f1': 0.0, 'exact_match': 0.0, 'micro_f1': 0.0, 'macro_f1': 0.0}
+        return {'auto': empty_metrics, 'top2': empty_metrics}
 
     auto_pred_actions = []
     top2_pred_actions = []
     true_name_sets = []
 
-    for data_piece in new_test_data:
+    for data_piece in eval_data:
         state_np = env.reset(data_piece).copy()
         auto_pred_actions.append(predict_actions_from_state(state_np, force_top_k=None))
 
@@ -555,10 +558,11 @@ def evaluate():
 
         true_name_sets.append(data_piece[1])
 
-    auto_metrics = evaluate_prediction_set(auto_pred_actions, true_name_sets, "模型自主停止")
-    top2_metrics = evaluate_prediction_set(top2_pred_actions, true_name_sets, "固定Top-2诊断")
-    logger.info(f"**自主停止 vs Top-2 样本F1: {auto_metrics['sample_f1']:.4f} / {top2_metrics['sample_f1']:.4f}")
-    return auto_metrics
+    auto_metrics = evaluate_prediction_set(auto_pred_actions, true_name_sets, f"{dataset_name}-模型自主停止")
+    top2_metrics = evaluate_prediction_set(top2_pred_actions, true_name_sets, f"{dataset_name}-固定Top-2诊断")
+    logger.info(f"**{dataset_name} 自主停止 vs Top-2 样本F1: {auto_metrics['sample_f1']:.4f} / {top2_metrics['sample_f1']:.4f}")
+    logger.info("========== {0}评估结束 ==========".format(dataset_name))
+    return {'auto': auto_metrics, 'top2': top2_metrics}
 
 
 def build_state_vector(symptoms, selected_actions=None):
@@ -670,15 +674,11 @@ def warmup_replay_with_expert():
     logger.info(f"ReplayMemory预填充完成，新增transition数量: {added}, 当前容量: {len(memory)}")
 
 
-def train(num_episodes, patience, min_delta):
+def train(num_episodes):
     logger.info(f"总的迭代次数: {num_episodes}")
 
     global steps_done
     steps_done = 0
-    best_metric = -1.0
-    best_state_dict = copy.deepcopy(policy_net.state_dict())
-    best_episode = -1
-    no_improve_count = 0
     st = time.perf_counter()
 
     for i_episode in range(num_episodes):
@@ -746,44 +746,27 @@ def train(num_episodes, patience, min_delta):
 
         epi_et = time.perf_counter()
 
-        metrics = evaluate()
         avg_loss = float(np.mean(loss_list)) if loss_list else 0.0
         avg_reward = float(np.mean(episode_rewards_list)) if episode_rewards_list else 0.0
         logger.info(f"第 {i_episode} 次迭代训练统计: avg_reward={avg_reward:.4f}, avg_loss={avg_loss:.6f}, agent_actions={agent_count}, random_actions={random_count}, stop_actions={stop_count}")
         logger.info(f"第 {i_episode} 次迭代的训练时间: {epi_et-epi_st:.6f}秒")
-
-        current_metric = metrics.get('sample_f1', 0.0)
-        if current_metric > best_metric + min_delta:
-            best_metric = current_metric
-            best_state_dict = copy.deepcopy(policy_net.state_dict())
-            best_episode = i_episode
-            no_improve_count = 0
-            torch.save(best_state_dict, 'dqn_model_best.pth')
-            logger.info(f"保存当前最佳模型: episode={best_episode}, sample_f1={best_metric:.4f}")
-        else:
-            no_improve_count += 1
-            logger.info(f"验证指标未提升: {no_improve_count}/{patience}")
-
         logger.info(f"第 {i_episode} 次迭代完成。")
-        if patience > 0 and no_improve_count >= patience:
-            logger.info(f"触发早停: best_episode={best_episode}, best_sample_f1={best_metric:.4f}")
-            break
 
     et = time.perf_counter()
     logger.info(f"训练时间总共: {et-st:.6f}秒")
-    logger.info(f"训练完成，最佳episode={best_episode}, 最佳sample_f1={best_metric:.4f}")
-    policy_net.load_state_dict(best_state_dict)
-    return best_metric
+    logger.info("训练完成，测试集评估将在训练结束后单独执行")
 
 
-def stratified_split_data(tcm_data, seed, test_ratio=0.1):
+def stratified_split_data(tcm_data, seed, test_ratio=0.2):
     rng = random.Random(seed)
     combo_keys = ['|'.join(sorted(item[1])) for item in tcm_data]
     combo_counts = Counter(combo_keys)
+    logger.info(f"数据集划分比例: 训练集 {1 - test_ratio:.0%}, 测试集 {test_ratio:.0%}")
 
     if train_test_split is not None and combo_counts and min(combo_counts.values()) >= 2:
         train_data, test_data = train_test_split(tcm_data, test_size=test_ratio, random_state=seed, stratify=combo_keys)
         logger.info("使用证候要素组合分层划分训练集/测试集")
+        logger.info(f"数据集总量:{len(tcm_data)}, 训练集:{len(train_data)}, 测试集:{len(test_data)}")
         return list(train_data), list(test_data)
 
     if train_test_split is None:
@@ -815,6 +798,7 @@ def stratified_split_data(tcm_data, seed, test_ratio=0.1):
     rng.shuffle(train_data)
     rng.shuffle(test_data)
     logger.info("使用内置训练集/测试集划分")
+    logger.info(f"数据集总量:{len(tcm_data)}, 训练集:{len(train_data)}, 测试集:{len(test_data)}")
     return train_data, test_data
 
 
@@ -835,7 +819,7 @@ def compute_Se_weights(training_data):
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="DQN Intelligent Syndrome Differentiation")
-    parser.add_argument("-episode", type=int, dest="num_episodes", default=100)
+    parser.add_argument("-episode", type=int, dest="num_episodes", default=50)
     parser.add_argument("-batch", type=int, dest="batch_size", default=64)
     parser.add_argument("-mem_capacity", type=int, dest="mem_capacity", default=10000)
     parser.add_argument("-gamma", type=float, dest="gamma", default=0.95)
@@ -854,8 +838,9 @@ if __name__ == "__main__":
     parser.add_argument("-pretrain_epochs", type=int, dest="pretrain_epochs", default=20)
     parser.add_argument("-pretrain_lr", type=float, dest="pretrain_lr", default=0.001)
     parser.add_argument("-replay_warmup", type=int, dest="replay_warmup", default=1)
-    parser.add_argument("-patience", type=int, dest="patience", default=15)
-    parser.add_argument("-min_delta", type=float, dest="min_delta", default=0.001)
+    parser.add_argument("-test_ratio", type=float, dest="test_ratio", default=0.2)
+    parser.add_argument("-patience", type=int, dest="patience", default=15, help="保留兼容参数；当前版本不再用测试集早停")
+    parser.add_argument("-min_delta", type=float, dest="min_delta", default=0.001, help="保留兼容参数；当前版本不再用测试集早停")
 
     args = parser.parse_args()
     BATCH_SIZE = args.batch_size
@@ -888,10 +873,10 @@ if __name__ == "__main__":
     env = Environment(symptoms, Se)
 
     # 小数据多标签任务：按证候要素组合分层划分，保持训练/测试分布稳定。
-    training_tcm_data, new_test_data = stratified_split_data(tcm_data, args.seed, test_ratio=0.1)
+    training_tcm_data, test_tcm_data = stratified_split_data(tcm_data, args.seed, test_ratio=args.test_ratio)
     env.set_Se_weights(compute_Se_weights(training_tcm_data))
 
-    logger.info(f"训练数据数量:{len(training_tcm_data)}, 测试数据数量:{len(new_test_data)}")
+    logger.info(f"训练数据数量:{len(training_tcm_data)}, 测试数据数量:{len(test_tcm_data)}, 测试集比例:{args.test_ratio:.2f}")
     logger.info(f"最大真实证候要素数:{max_Se_len}")
 
     # 构建DQN网络
@@ -909,7 +894,8 @@ if __name__ == "__main__":
     logger.info(
         f"**设置**: batch={BATCH_SIZE}, mem={MEM_CAPACITY}, gamma={GAMMA}, eps={EPS_START}->{EPS_END}, "
         f"eps_decay={EPS_DECAY}, tau={TAU}, lr={LR}, weight_decay={WEIGHT_DECAY}, "
-        f"hidden={nn_units}/{nn_units2}, dropout={dropout}, pretrain={args.use_pretrain}, warmup={args.replay_warmup}"
+        f"hidden={nn_units}/{nn_units2}, dropout={dropout}, pretrain={args.use_pretrain}, "
+        f"warmup={args.replay_warmup}, test_ratio={args.test_ratio}"
     )
 
     if args.use_pretrain:
@@ -918,15 +904,43 @@ if __name__ == "__main__":
     if args.replay_warmup:
         warmup_replay_with_expert()
 
-    best_metric = train(num_episodes, args.patience, args.min_delta)
+    train(num_episodes)
 
-    # 保存模型：best在训练过程中已保存，这里额外保存最终加载的最佳权重和last权重文件名。
-    torch.save(policy_net.state_dict(), 'dqn_model.pth')
-    torch.save(policy_net.state_dict(), 'dqn_model_last.pth')
-    print(f'模型已保存，最佳sample_f1={best_metric:.4f}')
+    test_metrics = evaluate(test_tcm_data, dataset_name="测试集")
+    logger.info("========== 最终测试集指标汇总 ==========")
+    logger.info(
+        f"测试集-自主停止: sample_f1={test_metrics['auto']['sample_f1']:.4f}, "
+        f"exact_match={test_metrics['auto']['exact_match']:.4f}, "
+        f"micro_f1={test_metrics['auto']['micro_f1']:.4f}, "
+        f"macro_f1={test_metrics['auto']['macro_f1']:.4f}"
+    )
+    logger.info(
+        f"测试集-Top-2: sample_f1={test_metrics['top2']['sample_f1']:.4f}, "
+        f"exact_match={test_metrics['top2']['exact_match']:.4f}, "
+        f"micro_f1={test_metrics['top2']['micro_f1']:.4f}, "
+        f"macro_f1={test_metrics['top2']['macro_f1']:.4f}"
+    )
 
-    # 预测：输入刻下症，由模型自主决定推荐几个证候要素以及何时停止。
-    # “停止”已加入候选动作；当模型选择“停止”时，立即结束预测并输出当前已选证候要素。
+    model_dir = os.path.dirname(os.path.abspath(__file__))
+    checkpoint = {
+        'model_state_dict': policy_net.state_dict(),
+        'symptoms': symptoms,
+        'Se': Se,
+        'nn_units': nn_units,
+        'nn_units2': nn_units2,
+        'dropout': dropout,
+        'state_vector_len': state_vector_len,
+        'n_actions': n_actions,
+        'seed': args.seed,
+        'test_ratio': args.test_ratio,
+        'test_metrics': test_metrics,
+    }
+    for model_name in ('dqn_model.pth', 'dqn_model_best.pth', 'dqn_model_last.pth'):
+        torch.save(checkpoint, os.path.join(model_dir, model_name))
+    print(f"模型已保存至: {model_dir}")
+    print(f"测试集自主停止sample_f1={test_metrics['auto']['sample_f1']:.4f}")
+
+    # 预测示例：输入刻下症，由模型自主决定推荐几个证候要素以及何时停止。
     def predict_symptoms(symptoms_str, max_actions=None, force_top_k=None):
         state_vector = np.zeros(len(env.state_space), dtype=np.float32)
         for symptom in symptoms_str.split(','):
