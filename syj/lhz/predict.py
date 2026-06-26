@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""加载训练好的DQN模型，对输入的症状进行辨证预测（证候要素推荐）"""
+"""辨证预测脚本文件。
+
+负责加载main.py训练并保存的DQN模型checkpoint，构建症状和证候要素映射，
+接收命令行或交互式输入的刻下症，并输出模型推荐的证候要素。
+"""
 
 import os
 import sys
@@ -64,9 +68,17 @@ class Environment(object):
         return state
 
 
-# ---------- 数据加载（与训练时一致） ----------
+def project_root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def default_data_path():
+    return os.path.join(project_root(), 'dataset', 'lhz_data.txt')
+
+
+# ---------- 数据加载（兼容旧state_dict模型） ----------
 def get_tcm_data(filename):
-    """读取数据集，构建症状和证候要素映射"""
+    """读取数据集，构建症状和证候要素映射。"""
     if not os.path.exists(filename):
         raise FileNotFoundError(f"未找到数据集文件：{filename}")
 
@@ -85,8 +97,8 @@ def get_tcm_data(filename):
         if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
             continue
 
-        symptoms = [s for s in parts[1].split(',') if s]
-        Se_list = [s for s in parts[2].split(',') if s]
+        symptoms = [s.strip() for s in parts[1].split(',') if s.strip()]
+        Se_list = [s.strip() for s in parts[2].split(',') if s.strip()]
 
         for Se in Se_list:
             if Se not in Se_set:
@@ -104,9 +116,77 @@ def get_tcm_data(filename):
     return symptom_map, Se_map, Se_freq_map
 
 
+def resolve_model_path(model_path=None):
+    """解析模型路径；默认优先使用训练脚本在 syj/lhz 下保存的模型。"""
+    if model_path:
+        if os.path.exists(model_path):
+            return model_path
+        script_relative = os.path.join(os.path.dirname(os.path.abspath(__file__)), model_path)
+        if os.path.exists(script_relative):
+            return script_relative
+        root_relative = os.path.join(project_root(), model_path)
+        if os.path.exists(root_relative):
+            return root_relative
+        return model_path
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(script_dir, 'dqn_model_best.pth'),
+        os.path.join(script_dir, 'dqn_model.pth'),
+        os.path.join(project_root(), 'dqn_model_best.pth'),
+        os.path.join(project_root(), 'dqn_model.pth'),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+def load_checkpoint(model_path):
+    """加载本地可信模型文件，兼容新checkpoint和旧state_dict。"""
+    try:
+        return torch.load(model_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(model_path, map_location=device)
+
+
+def load_recommender(model_path=None, data_path=None, nn_units=128, nn_units2=64, dropout=0.1):
+    """加载训练好的推荐器，返回 (model, env, metadata)。
+
+    新训练脚本保存的是checkpoint字典，包含模型权重和症状/证候要素映射；旧模型若只是
+    state_dict，则会重新读取数据集构建映射。
+    """
+    resolved_model_path = resolve_model_path(model_path)
+    if not os.path.exists(resolved_model_path):
+        raise FileNotFoundError(f"未找到模型文件：{resolved_model_path}")
+
+    checkpoint = load_checkpoint(resolved_model_path)
+    metadata = {'model_path': resolved_model_path}
+
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        symptoms = checkpoint['symptoms']
+        Se = checkpoint['Se']
+        nn_units = checkpoint.get('nn_units', nn_units)
+        nn_units2 = checkpoint.get('nn_units2', nn_units2)
+        dropout = checkpoint.get('dropout', dropout)
+        model_state_dict = checkpoint['model_state_dict']
+        metadata.update({k: v for k, v in checkpoint.items() if k != 'model_state_dict'})
+    else:
+        resolved_data_path = data_path or default_data_path()
+        symptoms, Se, _ = get_tcm_data(resolved_data_path)
+        model_state_dict = checkpoint
+        metadata['data_path'] = resolved_data_path
+
+    env = Environment(symptoms, Se)
+    model = DQN(len(env.state_space), len(env.action_space), nn_units, nn_units2, dropout).to(device)
+    model.load_state_dict(model_state_dict)
+    model.eval()
+    return model, env, metadata
+
+
 # ---------- 预测核心函数 ----------
-def mask_selected_actions(q_values, selected_actions):
-    """将已选动作的Q值设为负无穷，避免重复选择"""
+def mask_selected_actions(q_values, selected_actions, env):
+    """将已选动作的Q值设为负无穷，避免重复选择。"""
     masked = q_values.clone()
     for action_idx in selected_actions:
         if 0 <= action_idx < env.Se_action_num:
@@ -117,16 +197,6 @@ def mask_selected_actions(q_values, selected_actions):
 def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=None):
     """
     给定症状列表，模型自主选择证候要素，直到选择"停止"或达到上限。
-
-    参数:
-        model: 训练好的DQN网络
-        env: Environment实例（含症状/证候要素映射）
-        symptoms_list: 症状名列表，如 ['胸闷', '胸痛', '畏寒']
-        force_top_k: 强制选Top-k个（None则自主停止）
-        max_actions: 最大可选动作数
-
-    返回:
-        list[str]: 推荐的证候要素名称列表
     """
     model.eval()
     state_np = env.reset(symptoms_list)
@@ -138,11 +208,10 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
             q_values = model(state_tensor)
 
-            # 屏蔽已选动作；若要求Top-k则同时屏蔽停止动作
             mask_stop = force_top_k is not None and len(selected_actions) < force_top_k
             if mask_stop:
                 q_values[0, env.stop_action] = NEG_INF
-            q_values = mask_selected_actions(q_values, selected_actions)
+            q_values = mask_selected_actions(q_values, selected_actions, env)
 
             action_idx = q_values.max(1).indices.item()
 
@@ -158,15 +227,70 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
     return [env.action_space[idx] for idx in selected_actions]
 
 
+def normalize_symptoms(symptoms):
+    if isinstance(symptoms, str):
+        symptoms = symptoms.replace('，', ',')
+        return [s.strip() for s in symptoms.split(',') if s.strip()]
+    normalized = []
+    for symptom in symptoms:
+        normalized.extend(s.strip() for s in str(symptom).replace('，', ',').split(',') if s.strip())
+    return normalized
+
+
+def recommend_syndrome_elements(symptoms, model_path=None, data_path=None, topk=0):
+    """直接加载模型并推荐证候要素。
+
+    参数:
+        symptoms: 逗号分隔字符串或症状列表。
+        model_path: 模型路径，默认自动查找 syj/lhz/dqn_model_best.pth。
+        data_path: 旧state_dict模型需要的数据集路径。
+        topk: >0时强制输出Top-k；0时由模型自主停止。
+    """
+    model, env, metadata = load_recommender(model_path=model_path, data_path=data_path)
+    symptoms_list = normalize_symptoms(symptoms)
+    known = [s for s in symptoms_list if s in env.swapped_state_space]
+    unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
+
+    if not known:
+        return {
+            'recommendations': [],
+            'known_symptoms': known,
+            'unknown_symptoms': unknown,
+            'model_path': metadata.get('model_path'),
+        }
+
+    if topk and topk > 0:
+        recommendations = predict_symptoms(model, env, known, force_top_k=topk, max_actions=topk)
+    else:
+        recommendations = predict_symptoms(model, env, known)
+
+    return {
+        'recommendations': recommendations,
+        'known_symptoms': known,
+        'unknown_symptoms': unknown,
+        'model_path': metadata.get('model_path'),
+    }
+
+
+def print_prediction(result, prefix):
+    if result['unknown_symptoms']:
+        print(f"[警告] 以下症状不在训练集中，将被忽略: {result['unknown_symptoms']}")
+    if not result['known_symptoms']:
+        print("[错误] 没有有效的症状！")
+        return False
+    print(f"{prefix}: {', '.join(result['recommendations']) if result['recommendations'] else '无'}")
+    return True
+
+
 # ========== 主程序 ==========
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="DQN辨证预测")
-    parser.add_argument("--model", type=str, default="dqn_model_best.pth",
-                        help="模型权重文件路径（默认: dqn_model_best.pth）")
+    parser.add_argument("--model", type=str, default=None,
+                        help="模型权重文件路径（默认自动查找 syj/lhz/dqn_model_best.pth）")
     parser.add_argument("--data", type=str, default=None,
-                        help="数据集路径（默认: ../../dataset/lhz_data.txt）")
+                        help="旧state_dict模型需要的数据集路径（默认: dataset/lhz_data.txt）")
     parser.add_argument("--symptoms", type=str, default=None,
                         help="症状，逗号分隔（如: 胸闷,胸痛,畏寒）")
     parser.add_argument("--topk", type=int, default=0,
@@ -175,97 +299,35 @@ if __name__ == "__main__":
                         help="交互模式，逐行输入症状")
     args = parser.parse_args()
 
-    # 1. 加载数据集，构建环境映射
-    if args.data is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        data_path = os.path.join(script_dir, '..', '..', 'dataset', 'lhz_data.txt')
-    else:
-        data_path = args.data
-
-    print(f"加载数据集: {data_path}")
-    symptom_map, Se_map, Se_freq_map = get_tcm_data(data_path)
-    print(f"  刻下症数: {len(symptom_map)}, 证候要素数: {len(Se_map)}")
-
-    # 2. 构建环境
-    env = Environment(symptom_map, Se_map)
-    state_vector_len = len(env.state_space)
-    n_actions = len(env.action_space)
-    print(f"  状态向量长度: {state_vector_len}, 动作数: {n_actions}")
-
-    # 3. 加载模型
-    if args.model is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(script_dir, 'dqn_model_best.pth')
-    else:
-        model_path = args.model
-
-    print(f"加载模型: {model_path}")
-    model = DQN(state_vector_len, n_actions, 128, 64, 0.1).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model, env, metadata = load_recommender(model_path=args.model, data_path=args.data)
+    print(f"加载模型: {metadata['model_path']}")
+    print(f"  刻下症数: {env.symp_len}, 证候要素数: {env.Se_action_num}")
+    print(f"  状态向量长度: {len(env.state_space)}, 动作数: {len(env.action_space)}")
     print("  模型加载成功！")
 
-    # 4. 预测
-    if args.interactive:
-        print("\n=== 交互预测模式 ===")
-        print("输入症状（逗号分隔），输入 q 退出")
-        print("可用症状示例: 胸闷, 胸痛, 畏寒, 纳呆, 舌淡, 舌苔白, 细脉, 弱脉\n")
-        while True:
-            user_input = input("请输入症状: ").strip()
-            if user_input.lower() == 'q':
-                break
-            if not user_input:
-                continue
-
-            symptoms_list = [s.strip() for s in user_input.split(',') if s.strip()]
-
-            # 检查哪些症状在训练集中存在
-            known = [s for s in symptoms_list if s in env.swapped_state_space]
-            unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
-            if unknown:
-                print(f"  [警告] 以下症状不在训练集中，将被忽略: {unknown}")
-
-            if not known:
-                print("  [错误] 没有有效的症状！")
-                continue
-
-            # 自主停止预测
-            result_auto = predict_symptoms(model, env, known)
-            print(f"  自主停止推荐: {', '.join(result_auto) if result_auto else '无'}")
-
-            # Top-2 预测
-            result_top2 = predict_symptoms(model, env, known, force_top_k=2, max_actions=2)
-            print(f"  Top-2推荐:     {', '.join(result_top2) if result_top2 else '无'}")
-            print()
-
-    elif args.symptoms:
-        symptoms_list = [s.strip() for s in args.symptoms.split(',') if s.strip()]
+    def run_once(symptoms_text):
+        symptoms_list = normalize_symptoms(symptoms_text)
         known = [s for s in symptoms_list if s in env.swapped_state_space]
         unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
         if unknown:
-            print(f"[警告] 以下症状不在训练集中，将被忽略: {unknown}")
-
+            print(f"  [警告] 以下症状不在训练集中，将被忽略: {unknown}")
         if not known:
-            print("[错误] 没有有效的症状！")
-            sys.exit(1)
+            print("  [错误] 没有有效的症状！")
+            return
 
         if args.topk > 0:
             result = predict_symptoms(model, env, known, force_top_k=args.topk, max_actions=args.topk)
-            print(f"Top-{args.topk}推荐证候要素: {', '.join(result) if result else '无'}")
+            print(f"  Top-{args.topk}推荐证候要素: {', '.join(result) if result else '无'}")
         else:
-            result = predict_symptoms(model, env, known)
-            print(f"自主停止推荐证候要素: {', '.join(result) if result else '无'}")
-
+            result_auto = predict_symptoms(model, env, known)
             result_top2 = predict_symptoms(model, env, known, force_top_k=2, max_actions=2)
-            print(f"Top-2推荐证候要素:     {', '.join(result_top2) if result_top2 else '无'}")
+            print(f"  自主停止推荐: {', '.join(result_auto) if result_auto else '无'}")
+            print(f"  Top-2推荐:     {', '.join(result_top2) if result_top2 else '无'}")
 
-    else:
-        # 默认：交互模式，提示用户输入
-        print("\n" + "=" * 60)
-        print("  DQN 辨证论治 - 证候要素推荐")
-        print("=" * 60)
-        print("  输入症状（逗号分隔），输入 q 退出")
-        print("  可用症状示例: 胸闷, 胸痛, 畏寒, 纳呆, 舌淡, 舌苔白, 细脉\n")
-
+    if args.interactive or not args.symptoms:
+        print("\n=== 交互预测模式 ===")
+        print("输入症状（逗号分隔），输入 q 退出")
+        print("可用症状示例: 胸闷, 胸痛, 畏寒, 纳呆, 舌淡, 舌苔白, 细脉, 弱脉\n")
         while True:
             user_input = input("请输入症状: ").strip()
             if user_input.lower() == 'q':
@@ -273,18 +335,9 @@ if __name__ == "__main__":
                 break
             if not user_input:
                 continue
-
-            symptoms_list = [s.strip() for s in user_input.split(',') if s.strip()]
-            known = [s for s in symptoms_list if s in env.swapped_state_space]
-            unknown = [s for s in symptoms_list if s not in env.swapped_state_space]
-            if unknown:
-                print(f"  [警告] 以下症状不在训练集中，将被忽略: {unknown}")
-            if not known:
-                print("  [错误] 没有有效的症状！\n")
-                continue
-
-            result_auto = predict_symptoms(model, env, known)
-            result_top2 = predict_symptoms(model, env, known, force_top_k=2, max_actions=2)
-            print(f"  自主停止推荐: {', '.join(result_auto) if result_auto else '无'}")
-            print(f"  Top-2推荐:     {', '.join(result_top2) if result_top2 else '无'}")
+            run_once(user_input)
             print()
+    else:
+        run_once(args.symptoms)
+        if not normalize_symptoms(args.symptoms):
+            sys.exit(1)
