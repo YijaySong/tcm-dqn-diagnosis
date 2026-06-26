@@ -235,15 +235,15 @@ def get_tcm_data(filename, max_Se_num=0):
     skipped_empty_column = 0
 
     for line_no, piece in data:
-        # 只按前两个空格切分，明确读取第2列为symptom，第3列为Se。
+        # 只按前两个空白切分，明确读取第2列为symptom、第3列为Se。
         parts = piece.split(maxsplit=2)
         if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
             skipped_empty_column += 1
             logger.warning(f"跳过存在空列的数据行 {line_no}: {piece}")
             continue
 
-        symptoms = [symptom for symptom in parts[1].split(',') if symptom]  # symptom
-        Se_list = [Se for Se in parts[2].split(',') if Se]   # Se
+        symptoms = [symptom.strip() for symptom in parts[1].split(',') if symptom.strip()]  # symptom
+        Se_list = [Se.strip() for Se in parts[2].split(',') if Se.strip()]   # Se
         if not symptoms or not Se_list:
             skipped_empty_column += 1
             logger.warning(f"跳过症状或Se为空的数据行 {line_no}: {piece}")
@@ -266,7 +266,7 @@ def get_tcm_data(filename, max_Se_num=0):
 
     logger.info(f"全量刻下症数: {len(symptom_map)}, 全量证候要素数: {len(Se_map)}")
     if skipped_empty_column:
-        logger.warning(f"跳过任一列为空的数据行: {skipped_empty_column}条")
+        logger.warning(f"跳过存在空列的数据行: {skipped_empty_column}条")
     if not tuples4gen:
         raise ValueError(f"数据集为空或没有有效的三列数据：{filename}")
     logger.info(f"证候要素频次: {dict(sorted(Se_freq_map.items(), key=lambda x: (-x[1], x[0])))}")
