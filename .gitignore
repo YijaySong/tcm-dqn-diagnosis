@@ -29,9 +29,13 @@ dataset/*.xlsx
 # 图表
 *.png
 *.jpg
+*.pdf
 
 # Claude 配置
 .claude/*
 !.claude/skills/
 !.claude/skills/**
 .claude/skills/**/artifacts/
+
+# superpower log
+docs/
