@@ -20,9 +20,9 @@ device = torch.device(
 )
 
 
-class DQN(nn.Module):
+class DQNLegacy(nn.Module):
     def __init__(self, state_vector_len, n_actions, n_units=128, n_units2=64, dropout=0.1):
-        super(DQN, self).__init__()
+        super(DQNLegacy, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(state_vector_len, n_units, dtype=torch.float32, device='cpu'),
             nn.ReLU(),
@@ -34,6 +34,64 @@ class DQN(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
+
+class DQN(nn.Module):
+    def __init__(self, state_vector_len, n_actions, n_units=128, n_units2=64, dropout=0.1):
+        super(DQN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_vector_len, n_units, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(n_units, n_units2, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(n_units2, n_actions, dtype=torch.float32, device='cpu')
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class DuelingDQN(nn.Module):
+    def __init__(self, state_vector_len, n_actions, n_units=256, n_units2=128, dropout=0.15):
+        super(DuelingDQN, self).__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(state_vector_len, n_units, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(n_units, n_units2, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.value_stream = nn.Sequential(
+            nn.Linear(n_units2, n_units2, dtype=torch.float32, device='cpu'),
+            nn.ReLU(),
+            nn.Linear(n_units2, 1, dtype=torch.float32, device='cpu'),
+        )
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(n_units2, n_units2, dtype=torch.float32, device='cpu'),
+            nn.ReLU(),
+            nn.Linear(n_units2, n_actions, dtype=torch.float32, device='cpu'),
+        )
+
+    def forward(self, x):
+        features = self.feature(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
+
+
+def build_q_network(model_type, state_vector_len, n_actions, n_units=128, n_units2=64, dropout=0.1):
+    if model_type == 'dqn_legacy':
+        return DQNLegacy(state_vector_len, n_actions, n_units, n_units2, dropout)
+    if model_type == 'dueling':
+        return DuelingDQN(state_vector_len, n_actions, n_units, n_units2, dropout)
+    return DQN(state_vector_len, n_actions, n_units, n_units2, dropout)
 
 
 class Environment(object):
@@ -65,7 +123,7 @@ class Environment(object):
 
 
 def project_root():
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def default_data_path():
@@ -158,16 +216,18 @@ def load_recommender(model_path=None, data_path=None, nn_units=128, nn_units2=64
         nn_units = checkpoint.get('nn_units', nn_units)
         nn_units2 = checkpoint.get('nn_units2', nn_units2)
         dropout = checkpoint.get('dropout', dropout)
+        model_type = checkpoint.get('model_type', 'dqn_legacy')
         model_state_dict = checkpoint['model_state_dict']
         metadata.update({k: v for k, v in checkpoint.items() if k != 'model_state_dict'})
     else:
         resolved_data_path = data_path or default_data_path()
         symptoms, Se, _ = get_tcm_data(resolved_data_path)
         model_state_dict = checkpoint
+        model_type = 'dqn_legacy'
         metadata['data_path'] = resolved_data_path
 
     env = Environment(symptoms, Se)
-    model = DQN(len(env.state_space), len(env.action_space), nn_units, nn_units2, dropout).to(device)
+    model = build_q_network(model_type, len(env.state_space), len(env.action_space), nn_units, nn_units2, dropout).to(device)
     model.load_state_dict(model_state_dict)
     model.eval()
     return model, env, metadata

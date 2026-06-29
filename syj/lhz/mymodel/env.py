@@ -33,6 +33,27 @@ class Environment(object):
         for index in self.action_space:
             self.swapped_action_space[self.action_space[index]] = index
         self.Se_weights = {index: 1.0 for index in range(self.Se_action_num)}
+        self.configure_reward()
+
+    def configure_reward(
+        self, true_positive_base=1.0, delta_f1_scale=2.0,
+        false_positive_penalty=1.4, step_penalty=0.03,
+        over_select_penalty=0.7, stop_exact_reward=4.0,
+        stop_f1_scale=3.0, stop_base_penalty=0.5,
+        stop_fn_penalty=0.9, stop_fp_penalty=0.8,
+    ):
+        self.reward_config = {
+            'true_positive_base': true_positive_base,
+            'delta_f1_scale': delta_f1_scale,
+            'false_positive_penalty': false_positive_penalty,
+            'step_penalty': step_penalty,
+            'over_select_penalty': over_select_penalty,
+            'stop_exact_reward': stop_exact_reward,
+            'stop_f1_scale': stop_f1_scale,
+            'stop_base_penalty': stop_base_penalty,
+            'stop_fn_penalty': stop_fn_penalty,
+            'stop_fp_penalty': stop_fp_penalty,
+        }
 
     def set_Se_weights(self, Se_weights):
         self.Se_weights = Se_weights
@@ -47,10 +68,16 @@ class Environment(object):
 
     def _terminal_reward(self, selected_Se):
         _, fp, fn = calc_tp_fp_fn(selected_Se, self.piece_Se)
+        cfg = self.reward_config
         if fp == 0 and fn == 0:
-            return 3.0
+            return cfg['stop_exact_reward']
         f1 = set_f1(selected_Se, self.piece_Se)
-        return 2.0 * f1 - 1.0 - 0.8 * fn - 0.6 * fp
+        return (
+            cfg['stop_f1_scale'] * f1
+            - cfg['stop_base_penalty']
+            - cfg['stop_fn_penalty'] * fn
+            - cfg['stop_fp_penalty'] * fp
+        )
 
     def step(self, action, selected_actions):
         selected_Se = [item for item in selected_actions if item != self.stop_action]
@@ -64,14 +91,15 @@ class Environment(object):
         after_f1 = set_f1(next_selected_Se, self.piece_Se)
         delta_f1 = after_f1 - before_f1
 
+        cfg = self.reward_config
         if action in self.piece_Se:
-            reward = 0.8 * self.Se_weights.get(action, 1.0) + 1.5 * delta_f1
+            reward = cfg['true_positive_base'] * self.Se_weights.get(action, 1.0) + cfg['delta_f1_scale'] * delta_f1
         else:
-            reward = -1.2 + 1.5 * delta_f1
+            reward = -cfg['false_positive_penalty'] + cfg['delta_f1_scale'] * delta_f1
 
-        reward -= 0.05
+        reward -= cfg['step_penalty']
         over_select = max(0, len(next_selected_Se) - len(self.piece_Se))
-        reward -= 0.5 * over_select
+        reward -= cfg['over_select_penalty'] * over_select
 
         self.state[self.symp_len + action] = 1
 

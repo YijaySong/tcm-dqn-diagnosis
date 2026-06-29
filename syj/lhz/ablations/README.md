@@ -1,6 +1,6 @@
 # LHZ 消融实验
 
-本目录保存 LHZ 模块的消融实验入口脚本。所有实验都复用上一级目录中的 `main.py`，只改变关键实验变量，不修改模型结构、奖励函数、数据划分或评估指标。
+本目录保存 LHZ 模块的消融实验入口脚本。所有实验都复用 `syj/lhz/mymodel/main.py`，只改变关键实验变量，不修改模型结构、奖励函数、数据划分或评估指标。
 
 ## 实验列表
 
@@ -148,8 +148,8 @@ python3 syj/lhz/ablations/run_full.py -- -episode 5
 
 `ablation_utils.py` 会在每个实验运行前备份以下主程序可能覆盖的产物：
 
-- `syj/lhz/dqn_model.pth`
-- `syj/lhz/split_data/`
+- `syj/lhz/mymodel/dqn_model.pth`
+- `syj/lhz/mymodel/split_data/`
 
 每个实验结束后，会先将本次实验产生的模型和划分数据复制到该实验自己的结果目录，然后恢复实验开始前的文件状态。因此连续运行多个消融实验时，不会直接覆盖你原先的 LHZ 模型文件。
 

@@ -116,7 +116,7 @@ python3 syj/lhz/contrast/plot_contrast_metrics.py --also-png
 
 ## 注意事项
 
-- 所有模型复用 `syj/lhz/data.py` 的数据加载和划分逻辑。
-- 所有模型复用 `syj/lhz/evaluation.py` 的多标签评估指标。
+- 所有模型复用 `syj/lhz/mymodel/data.py` 的数据加载和划分逻辑。
+- 所有模型复用 `syj/lhz/mymodel/evaluation.py` 的多标签评估指标。
 - 不使用 CrossEntropyLoss 或 softmax，因为本任务不是单标签多分类。
 - 生成的 `results/` 目录已在本目录 `.gitignore` 中忽略。

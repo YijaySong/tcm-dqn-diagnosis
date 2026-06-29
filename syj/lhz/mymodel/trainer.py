@@ -24,7 +24,8 @@ class DQNTrainer(object):
     def __init__(
         self, env, training_tcm_data, test_tcm_data, policy_net, target_net, memory,
         optimizer, device, logger, batch_size, gamma, tau, weight_decay,
-        eps_start, eps_end, eps_decay, n_actions
+        eps_start, eps_end, eps_decay, n_actions,
+        aux_supervised_weight=0.05, pretrain_all_permutations=1
     ):
         self.env = env
         self.training_tcm_data = training_tcm_data
@@ -40,9 +41,47 @@ class DQNTrainer(object):
         self.tau = tau
         self.weight_decay = weight_decay
         self.n_actions = n_actions
+        self.aux_supervised_weight = aux_supervised_weight
+        self.pretrain_all_permutations = pretrain_all_permutations
+        self.symptom_to_true_actions = {}
+        for symptoms, true_Se_names in self.training_tcm_data:
+            key = tuple(sorted(symptoms))
+            self.symptom_to_true_actions[key] = [self.env.swapped_action_space[name] for name in true_Se_names]
         self.action_selector = ActionSelector(
             env, policy_net, n_actions, device, eps_start, eps_end, eps_decay
         )
+
+    def supervised_auxiliary_loss(self, state_batch):
+        if self.aux_supervised_weight <= 0:
+            return None
+        states_np = state_batch.detach().cpu().numpy()
+        targets = np.zeros((states_np.shape[0], self.n_actions), dtype=np.float32)
+        has_target = np.zeros(states_np.shape[0], dtype=bool)
+        for row_idx, state_np in enumerate(states_np):
+            symptoms = [
+                self.env.state_space[idx]
+                for idx in range(self.env.symp_len)
+                if state_np[idx] > 0.5
+            ]
+            selected_actions = [
+                idx for idx in range(self.env.Se_action_num)
+                if state_np[self.env.symp_len + idx] > 0.5
+            ]
+            true_actions = self.symptom_to_true_actions.get(tuple(sorted(symptoms)))
+            if true_actions is None:
+                continue
+            remaining = [action for action in true_actions if action not in selected_actions]
+            if remaining:
+                targets[row_idx, remaining] = 1.0
+            else:
+                targets[row_idx, self.env.stop_action] = 1.0
+            has_target[row_idx] = True
+        if not has_target.any():
+            return None
+        valid_mask = torch.tensor(has_target, dtype=torch.bool, device=self.device)
+        target_tensor = torch.tensor(targets[has_target], dtype=torch.float32, device=self.device)
+        logits = self.policy_net(state_batch[valid_mask])
+        return nn.BCEWithLogitsLoss()(logits, target_tensor)
 
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
@@ -74,6 +113,9 @@ class DQNTrainer(object):
 
         criterion = nn.SmoothL1Loss()
         loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
+        aux_loss = self.supervised_auxiliary_loss(state_batch)
+        if aux_loss is not None:
+            loss = loss + self.aux_supervised_weight * aux_loss
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -91,23 +133,25 @@ class DQNTrainer(object):
 
         for symptoms, true_Se_names in self.training_tcm_data:
             true_actions = [self.env.swapped_action_space[name] for name in true_Se_names]
+            trajectories = [list(true_actions)]
+            for _ in range(max(0, self.pretrain_all_permutations - 1)):
+                shuffled = list(true_actions)
+                random.shuffle(shuffled)
+                trajectories.append(shuffled)
 
-            target = np.zeros(self.n_actions, dtype=np.float32)
-            target[true_actions] = 1.0
-            states.append(build_state_vector(self.env, symptoms))
-            targets.append(target)
-
-            for selected_action in true_actions:
-                remaining_actions = [action for action in true_actions if action != selected_action]
-                target = np.zeros(self.n_actions, dtype=np.float32)
-                target[remaining_actions] = 1.0
-                states.append(build_state_vector(self.env, symptoms, [selected_action]))
-                targets.append(target)
-
-            target = np.zeros(self.n_actions, dtype=np.float32)
-            target[self.env.stop_action] = 1.0
-            states.append(build_state_vector(self.env, symptoms, true_actions))
-            targets.append(target)
+            for trajectory in trajectories:
+                selected_actions = []
+                for step_idx in range(len(trajectory) + 1):
+                    target = np.zeros(self.n_actions, dtype=np.float32)
+                    remaining_actions = [action for action in true_actions if action not in selected_actions]
+                    if remaining_actions:
+                        target[remaining_actions] = 1.0
+                    else:
+                        target[self.env.stop_action] = 1.0
+                    states.append(build_state_vector(self.env, symptoms, selected_actions))
+                    targets.append(target)
+                    if step_idx < len(trajectory):
+                        selected_actions.append(trajectory[step_idx])
 
         states = torch.tensor(np.array(states), dtype=torch.float32, device=self.device)
         targets = torch.tensor(np.array(targets), dtype=torch.float32, device=self.device)
@@ -275,7 +319,8 @@ class DQNTrainer(object):
 
 
 def save_checkpoint(model_dir, policy_net, symptoms, Se, nn_units, nn_units2, dropout,
-                    state_vector_len, n_actions, seed, test_ratio, test_metrics):
+                    state_vector_len, n_actions, seed, test_ratio, test_metrics,
+                    model_type='dqn'):
     checkpoint = {
         'model_state_dict': policy_net.state_dict(),
         'symptoms': symptoms,
@@ -285,6 +330,7 @@ def save_checkpoint(model_dir, policy_net, symptoms, Se, nn_units, nn_units2, dr
         'dropout': dropout,
         'state_vector_len': state_vector_len,
         'n_actions': n_actions,
+        'model_type': model_type,
         'seed': seed,
         'test_ratio': test_ratio,
         'test_metrics': test_metrics,

@@ -15,11 +15,12 @@ import numpy as np
 
 CONTRAST_DIR = Path(__file__).resolve().parent
 LHZ_DIR = CONTRAST_DIR.parent
+MYMODEL_DIR = LHZ_DIR / 'mymodel'
 PROJECT_ROOT = LHZ_DIR.parent.parent
 RESULTS_DIR = CONTRAST_DIR / 'results'
 
-if str(LHZ_DIR) not in sys.path:
-    sys.path.insert(0, str(LHZ_DIR))
+if str(MYMODEL_DIR) not in sys.path:
+    sys.path.insert(0, str(MYMODEL_DIR))
 
 from data import export_split_data, get_tcm_data, stratified_split_data, strip_sample_id  # noqa: E402
 from env import Environment  # noqa: E402

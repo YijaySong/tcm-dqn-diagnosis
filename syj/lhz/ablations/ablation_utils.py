@@ -3,7 +3,7 @@
 
 提供单个实验的安全运行封装：
 1. 在独立结果目录中保存日志和实验产物。
-2. 运行前备份`syj/lhz/dqn_model.pth`和`syj/lhz/split_data/`。
+2. 运行前备份`syj/lhz/mymodel/dqn_model.pth`和`syj/lhz/mymodel/split_data/`。
 3. 运行后复制本次实验产物到结果目录，并恢复运行前文件状态，避免覆盖已有模型。
 """
 
@@ -21,10 +21,11 @@ from pathlib import Path
 
 ABLATIONS_DIR = Path(__file__).resolve().parent
 LHZ_DIR = ABLATIONS_DIR.parent
-MAIN_SCRIPT = LHZ_DIR / 'main.py'
+MYMODEL_DIR = LHZ_DIR / 'mymodel'
+MAIN_SCRIPT = MYMODEL_DIR / 'main.py'
 RESULTS_DIR = ABLATIONS_DIR / 'results'
-MODEL_PATH = LHZ_DIR / 'dqn_model.pth'
-SPLIT_DATA_DIR = LHZ_DIR / 'split_data'
+MODEL_PATH = MYMODEL_DIR / 'dqn_model.pth'
+SPLIT_DATA_DIR = MYMODEL_DIR / 'split_data'
 
 EXPERIMENTS = [
     {
@@ -152,7 +153,7 @@ def run_experiment(experiment_name, run_id=None, dry_run=False, extra_main_args=
     old_argv = sys.argv[:]
     old_cwd = os.getcwd()
     inserted_path = False
-    lhz_path = str(LHZ_DIR)
+    lhz_path = str(MYMODEL_DIR)
 
     print(f'========== 开始实验: {experiment["label"]} ==========')
     print(f'说明: {experiment["description"]}')
@@ -188,7 +189,7 @@ def wrapper_cli(experiment_name):
     parser.add_argument('--dry-run', action='store_true', help='只显示将要执行的命令，不启动训练')
     parser.add_argument(
         'main_args', nargs=argparse.REMAINDER,
-        help='追加传给syj/lhz/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
+        help='追加传给syj/lhz/mymodel/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
     )
     args = parser.parse_args()
     extra_main_args = args.main_args

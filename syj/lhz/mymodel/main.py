@@ -15,7 +15,7 @@ from constants import device
 from data import compute_Se_weights, export_split_data, get_tcm_data, stratified_split_data, strip_sample_id
 from env import Environment
 from memory import ReplayMemory
-from model import DQN
+from model import build_q_network
 from trainer import DQNTrainer, save_checkpoint
 from utils import create_logger, default_data_path, set_seed
 
@@ -32,9 +32,12 @@ def build_parser():
     parser.add_argument("-tau", type=float, dest="tau", default=0.01)
     parser.add_argument("-lr", type=float, dest="lr", default=0.001)
     parser.add_argument("-weight_decay", type=float, dest="weight_decay", default=1e-4)
-    parser.add_argument("-nn_units", type=int, dest="nn_units", default=128)
-    parser.add_argument("-nn_units2", type=int, dest="nn_units2", default=64)
-    parser.add_argument("-dropout", type=float, dest="dropout", default=0.1)
+    parser.add_argument("-nn_units", type=int, dest="nn_units", default=256)
+    parser.add_argument("-nn_units2", type=int, dest="nn_units2", default=128)
+    parser.add_argument("-dropout", type=float, dest="dropout", default=0.15)
+    parser.add_argument("-model_type", choices=['dqn_legacy', 'dqn', 'dueling'], dest="model_type", default='dueling')
+    parser.add_argument("-aux_supervised_weight", type=float, dest="aux_supervised_weight", default=0.05)
+    parser.add_argument("-pretrain_all_permutations", type=int, dest="pretrain_all_permutations", default=2)
     parser.add_argument("-seed", type=int, dest="seed", default=9)
     parser.add_argument("-max_se_num", type=int, dest="max_Se_num", default=0)
     parser.add_argument("-use_pretrain", type=int, dest="use_pretrain", default=1)
@@ -83,8 +86,8 @@ def main():
     n_actions = len(env.action_space)
     logger.info(f"状态向量长度:{state_vector_len}, 动作数:{n_actions}")
 
-    policy_net = DQN(state_vector_len, n_actions, args.nn_units, args.nn_units2, args.dropout).to(device)
-    target_net = DQN(state_vector_len, n_actions, args.nn_units, args.nn_units2, args.dropout).to(device)
+    policy_net = build_q_network(args.model_type, state_vector_len, n_actions, args.nn_units, args.nn_units2, args.dropout).to(device)
+    target_net = build_q_network(args.model_type, state_vector_len, n_actions, args.nn_units, args.nn_units2, args.dropout).to(device)
     target_net.load_state_dict(policy_net.state_dict())
 
     memory = ReplayMemory(args.mem_capacity)
@@ -94,14 +97,16 @@ def main():
         f"**设置**: batch={args.batch_size}, mem={args.mem_capacity}, gamma={args.gamma}, "
         f"eps={args.eps_start}->{args.eps_end}, eps_decay={args.eps_decay}, tau={args.tau}, "
         f"lr={args.lr}, weight_decay={args.weight_decay}, hidden={args.nn_units}/{args.nn_units2}, "
-        f"dropout={args.dropout}, pretrain={args.use_pretrain}, warmup={args.replay_warmup}, "
-        f"test_ratio={args.test_ratio}"
+        f"dropout={args.dropout}, model_type={args.model_type}, pretrain={args.use_pretrain}, "
+        f"warmup={args.replay_warmup}, aux_supervised_weight={args.aux_supervised_weight}, "
+        f"pretrain_all_permutations={args.pretrain_all_permutations}, test_ratio={args.test_ratio}"
     )
 
     trainer = DQNTrainer(
         env, training_tcm_data, test_tcm_data, policy_net, target_net, memory,
         optimizer, device, logger, args.batch_size, args.gamma, args.tau,
-        args.weight_decay, args.eps_start, args.eps_end, args.eps_decay, n_actions
+        args.weight_decay, args.eps_start, args.eps_end, args.eps_decay, n_actions,
+        args.aux_supervised_weight, args.pretrain_all_permutations
     )
 
     if args.use_pretrain:
@@ -130,7 +135,8 @@ def main():
     model_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = save_checkpoint(
         model_dir, policy_net, symptoms, Se, args.nn_units, args.nn_units2,
-        args.dropout, state_vector_len, n_actions, args.seed, args.test_ratio, test_metrics
+        args.dropout, state_vector_len, n_actions, args.seed, args.test_ratio, test_metrics,
+        args.model_type
     )
     print(f"模型已保存至: {model_path}")
     # print(f"测试集自主停止sample_f1={test_metrics['auto']['sample_f1']:.4f}")

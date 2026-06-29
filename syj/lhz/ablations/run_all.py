@@ -71,7 +71,7 @@ def find_log_file(output_dir):
 
 
 def parse_metrics_from_log(log_path):
-    """Parse aggregate and label-level metrics emitted by syj/lhz/evaluation.py."""
+    """Parse aggregate and label-level metrics emitted by syj/lhz/mymodel/evaluation.py."""
     result = {
         'auto': {'metrics': {}, 'labels': {}},
         'top2': {'metrics': {}, 'labels': {}},
@@ -246,7 +246,7 @@ def parse_args():
     parser.add_argument('--hide-labels', action='store_true', help='终端不展示逐标签指标；仍会保存到CSV/JSON')
     parser.add_argument(
         'main_args', nargs=argparse.REMAINDER,
-        help='追加传给所有实验中syj/lhz/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
+        help='追加传给所有实验中syj/lhz/mymodel/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
     )
     args = parser.parse_args()
     if args.main_args and args.main_args[0] == '--':
