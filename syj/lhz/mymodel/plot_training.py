@@ -335,16 +335,32 @@ def plot_metrics(episodes, final_metrics=None, save_path=None):
     save_figures(figures, save_path)
 
 
+def find_latest_log():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(script_dir))))
+    search_dirs = [
+        script_dir,
+        os.getcwd(),
+        os.path.dirname(script_dir),
+        os.path.join(os.path.dirname(script_dir), 'ablations', 'results'),
+        os.path.join(project_root, 'syj', 'lhz', 'ablations', 'results'),
+    ]
+    log_files = []
+    for search_dir in search_dirs:
+        if os.path.isdir(search_dir):
+            log_files.extend(glob.glob(os.path.join(search_dir, 'dqn_*.log')))
+            log_files.extend(glob.glob(os.path.join(search_dir, '**', 'dqn_*.log'), recursive=True))
+    existing = [path for path in set(log_files) if os.path.exists(path)]
+    return max(existing, key=os.path.getmtime) if existing else None
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        log_files = glob.glob(os.path.join(script_dir, '..', '..', 'dqn_*.log'))
-        if not log_files:
-            log_files = glob.glob(os.path.join(script_dir, 'dqn_*.log'))
-        if not log_files:
+        log_path = find_latest_log()
+        if log_path is None:
             print("未找到日志文件，请指定日志文件路径: python plot_training.py <log_path>")
+            print("也可以先运行: python syj/lhz/mymodel/main.py")
             sys.exit(1)
-        log_path = max(log_files, key=os.path.getmtime)
         print(f"自动选择最新日志: {log_path}")
     else:
         log_path = sys.argv[1]
