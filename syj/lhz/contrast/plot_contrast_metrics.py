@@ -3,7 +3,10 @@
 
 import argparse
 import csv
+import glob
 import json
+import os
+import re
 from pathlib import Path
 
 try:
@@ -14,7 +17,11 @@ except ImportError as exc:
     raise SystemExit('缺少matplotlib，无法绘图。请先安装: pip install matplotlib') from exc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+LHZ_DIR = SCRIPT_DIR.parent
+MYMODEL_DIR = LHZ_DIR / 'mymodel'
 RESULTS_DIR = SCRIPT_DIR / 'results'
+OWN_MODEL_EXPERIMENT = 'our_rl_model'
+OWN_MODEL_LABEL = 'Our RL Model'
 
 matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -49,6 +56,7 @@ MODEL_ORDER = [
     'linear_svm',
     'random_forest',
     'hist_gradient_boosting',
+    OWN_MODEL_EXPERIMENT,
 ]
 MODE_ORDER = ['auto', 'top2']
 
@@ -100,6 +108,149 @@ def load_result_dir(result_dir):
     return read_csv(aggregate_path), read_csv(label_path), read_json(result_dir / 'all_metrics.json')
 
 
+def find_latest_own_model_log():
+    """优先查找完整模型日志，最后才回退到任意DQN日志。"""
+    project_root = LHZ_DIR.parent.parent
+    search_patterns = [
+        str(MYMODEL_DIR / 'dqn_*.log'),
+        str(Path.cwd() / 'dqn_*.log'),
+        str(project_root / 'dqn_*.log'),
+        str(LHZ_DIR / 'dqn_*.log'),
+        str(LHZ_DIR / 'ablations' / 'results' / '*' / 'full' / 'dqn_*.log'),
+        str(LHZ_DIR / 'ablations' / 'results' / '*' / 'full' / '**' / 'dqn_*.log'),
+        str(LHZ_DIR / 'ablations' / 'results' / '**' / 'dqn_*.log'),
+    ]
+    for pattern in search_patterns:
+        recursive = '**' in pattern
+        matches = [Path(path) for path in glob.glob(pattern, recursive=recursive) if Path(path).exists()]
+        if matches:
+            return max(matches, key=lambda path: path.stat().st_mtime)
+    return None
+
+
+def parse_own_model_log(log_path):
+    metrics = {'auto': {}, 'top2': {}}
+    current_mode = None
+    core_pattern = re.compile(
+        r'sample_f1:([0-9.]+), sample_recall:([0-9.]+), '
+        r'sample_precision:([0-9.]+), exact_match:([0-9.]+), macro_f1:([0-9.]+)'
+    )
+    jaccard_pattern = re.compile(r'sample_jaccard\) avg:([0-9.]+)')
+    exact_pattern = re.compile(r'exact_match\):([0-9.]+), 标签级Accuracy\(label_accuracy\):([0-9.]+), HammingLoss\(hamming_loss\):([0-9.]+)')
+    micro_pattern = re.compile(r'Micro P/R/F1:([0-9.]+)/([0-9.]+)/([0-9.]+)')
+    macro_pattern = re.compile(r'Macro P/R/F1:([0-9.]+)/([0-9.]+)/([0-9.]+)')
+    hit_pattern = re.compile(r'HitRate\(hit_rate\):([0-9.]+), EmptyPredictionRate\(empty_prediction_rate\):([0-9.]+)')
+    count_pattern = re.compile(
+        r'平均推荐数:([0-9.]+), 平均真实数:([0-9.]+), 平均数量误差:([0-9.]+), '
+        r'平均多选数:([0-9.]+), 平均漏选数:([0-9.]+)'
+    )
+    final_auto_pattern = re.compile(r'测试集-自主停止: sample_f1=([0-9.]+), exact_match=([0-9.]+), micro_f1=([0-9.]+), macro_f1=([0-9.]+)')
+    final_top2_pattern = re.compile(r'测试集-Top-2: sample_f1=([0-9.]+), exact_match=([0-9.]+), micro_f1=([0-9.]+), macro_f1=([0-9.]+)')
+
+    for raw_line in Path(log_path).read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if '**测试集-模型自主停止' in line or '**模型自主停止' in line:
+            current_mode = 'auto'
+            continue
+        if '**测试集-固定Top-2诊断' in line or '**固定Top-2诊断' in line:
+            current_mode = 'top2'
+            continue
+
+        match = final_auto_pattern.search(line)
+        if match:
+            metrics['auto'].update({
+                'sample_f1': float(match.group(1)),
+                'exact_match': float(match.group(2)),
+                'micro_f1': float(match.group(3)),
+                'macro_f1': float(match.group(4)),
+            })
+            continue
+        match = final_top2_pattern.search(line)
+        if match:
+            metrics['top2'].update({
+                'sample_f1': float(match.group(1)),
+                'exact_match': float(match.group(2)),
+                'micro_f1': float(match.group(3)),
+                'macro_f1': float(match.group(4)),
+            })
+            continue
+
+        if current_mode is None:
+            continue
+        target = metrics[current_mode]
+        match = core_pattern.search(line)
+        if match:
+            target.update({
+                'sample_f1': float(match.group(1)),
+                'sample_recall': float(match.group(2)),
+                'sample_precision': float(match.group(3)),
+                'exact_match': float(match.group(4)),
+                'macro_f1': float(match.group(5)),
+            })
+            continue
+        match = jaccard_pattern.search(line)
+        if match:
+            target['sample_jaccard'] = float(match.group(1))
+            continue
+        match = exact_pattern.search(line)
+        if match:
+            target['exact_match'] = float(match.group(1))
+            target['label_accuracy'] = float(match.group(2))
+            target['hamming_loss'] = float(match.group(3))
+            continue
+        match = micro_pattern.search(line)
+        if match:
+            target['micro_precision'] = float(match.group(1))
+            target['micro_recall'] = float(match.group(2))
+            target['micro_f1'] = float(match.group(3))
+            continue
+        match = macro_pattern.search(line)
+        if match:
+            target['macro_precision'] = float(match.group(1))
+            target['macro_recall'] = float(match.group(2))
+            target['macro_f1'] = float(match.group(3))
+            continue
+        match = hit_pattern.search(line)
+        if match:
+            target['hit_rate'] = float(match.group(1))
+            target['empty_prediction_rate'] = float(match.group(2))
+            continue
+        match = count_pattern.search(line)
+        if match:
+            target['avg_selected_count'] = float(match.group(1))
+            target['avg_true_count'] = float(match.group(2))
+            target['avg_cardinality_error'] = float(match.group(3))
+            target['avg_over_select'] = float(match.group(4))
+            target['avg_under_select'] = float(match.group(5))
+    return metrics
+
+
+def append_own_model_rows(aggregate_rows, results, log_path=None):
+    log_path = Path(log_path) if log_path else find_latest_own_model_log()
+    if log_path is None:
+        print('未找到我们自己模型的DQN日志，contrast图中不会加入Our RL Model。')
+        return aggregate_rows, results
+    metrics = parse_own_model_log(log_path)
+    aggregate_rows = [row for row in aggregate_rows if row.get('experiment') != OWN_MODEL_EXPERIMENT]
+    for mode in MODE_ORDER:
+        row = {
+            'experiment': OWN_MODEL_EXPERIMENT,
+            'label': OWN_MODEL_LABEL,
+            'mode': mode,
+        }
+        row.update(metrics.get(mode, {}))
+        aggregate_rows.append(row)
+    results = [item for item in results if item.get('experiment') != OWN_MODEL_EXPERIMENT]
+    results.append({
+        'experiment': OWN_MODEL_EXPERIMENT,
+        'label': OWN_MODEL_LABEL,
+        'status': 'from_log',
+        'reason': str(log_path),
+    })
+    print(f'已加入我们自己模型指标: {log_path}')
+    return aggregate_rows, results
+
+
 def sort_rows(rows):
     model_rank = {name: idx for idx, name in enumerate(MODEL_ORDER)}
     mode_rank = {name: idx for idx, name in enumerate(MODE_ORDER)}
@@ -134,7 +285,8 @@ def plot_core_metrics(rows, mode, title_suffix):
     for idx, (key, title) in enumerate(CORE_METRICS):
         ax = axes[idx]
         values = [to_float(row.get(key)) for row in rows]
-        bars = ax.bar(labels, values, color='#4C78A8')
+        colors = ['#D62728' if row.get('experiment') == OWN_MODEL_EXPERIMENT else '#4C78A8' for row in rows]
+        bars = ax.bar(labels, values, color=colors)
         ax.set_title(title)
         ax.set_ylim(0, 1)
         ax.grid(True, axis='y', alpha=0.3)
@@ -259,6 +411,8 @@ def parse_args():
     parser.add_argument('--output', default=None, help='输出PDF路径；默认保存为结果目录/contrast_metrics.pdf')
     parser.add_argument('--also-png', action='store_true')
     parser.add_argument('--top-n-labels', type=int, default=15)
+    parser.add_argument('--own-log', default=None, help='我们自己DQN/RL模型的日志路径；默认自动查找最新dqn_*.log')
+    parser.add_argument('--no-own-model', action='store_true', help='不把我们自己的DQN/RL模型加入对比图')
     parser.add_argument('--no-summary', action='store_true')
     return parser.parse_args()
 
@@ -267,6 +421,8 @@ def main():
     args = parse_args()
     result_dir = Path(args.result_dir) if args.result_dir else latest_result_dir()
     aggregate_rows, label_rows, results = load_result_dir(result_dir)
+    if not args.no_own_model:
+        aggregate_rows, results = append_own_model_rows(aggregate_rows, results, log_path=args.own_log)
     output = Path(args.output) if args.output else result_dir / 'contrast_metrics.pdf'
     figures = make_figures(aggregate_rows, label_rows, results, args.top_n_labels)
     save_figures(figures, output, also_png=args.also_png)

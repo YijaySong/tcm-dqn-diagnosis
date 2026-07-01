@@ -220,7 +220,7 @@ def export_split_data(train_data, test_data, output_dir, seed, test_ratio, logge
     return train_path, test_path
 
 
-def compute_Se_weights(training_data, env, logger=None):
+def compute_Se_weights(training_data, env, logger=None, min_weight=0.75, max_weight=2.5, power=0.5):
     freq = Counter()
     for _, Se_names in training_data:
         for Se_name in Se_names:
@@ -229,8 +229,11 @@ def compute_Se_weights(training_data, env, logger=None):
     weights = {}
     for action_idx in range(env.Se_action_num):
         count = max(freq.get(action_idx, 1), 1)
-        weight = math.sqrt(total / (env.Se_action_num * count))
-        weights[action_idx] = float(min(max(weight, 0.75), 1.5))
+        weight = (total / (env.Se_action_num * count)) ** power
+        weights[action_idx] = float(min(max(weight, min_weight), max_weight))
     if logger is not None:
-        logger.info(f"证候要素奖励权重: { {env.action_space[k]: round(v, 4) for k, v in weights.items()} }")
+        logger.info(
+            f"证候要素奖励权重(min={min_weight}, max={max_weight}, power={power}): "
+            f"{ {env.action_space[k]: round(v, 4) for k, v in weights.items()} }"
+        )
     return weights

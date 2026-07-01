@@ -82,7 +82,7 @@ def safe_divide(numerator, denominator):
     )
 
 
-def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger):
+def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger, trace_sets=None):
     n_test = len(true_name_sets)
     y_pred = np.array([actions_to_multihot(env, actions) for actions in pred_action_sets])
     y_true = np.array([Se_names_to_multihot(env, names) for names in true_name_sets])
@@ -153,6 +153,23 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
     avg_over_select = float(np.mean(over_select_count))
     avg_under_select = float(np.mean(under_select_count))
 
+    stop_depths = []
+    stop_margins = []
+    premature_stop = []
+    late_stop = []
+    if trace_sets is not None:
+        for pred_actions, true_names, trace in zip(pred_action_sets, true_name_sets, trace_sets):
+            stop_step = len(trace) if trace and trace[-1].get('is_stop') else len(pred_actions)
+            stop_depths.append(stop_step)
+            if trace:
+                stop_margins.append(trace[-1].get('stop_margin', 0.0))
+            premature_stop.append(1 if len(pred_actions) < len(true_names) else 0)
+            late_stop.append(1 if len(pred_actions) > len(true_names) else 0)
+    avg_stop_depth = float(np.mean(stop_depths)) if stop_depths else 0.0
+    avg_stop_margin = float(np.mean(stop_margins)) if stop_margins else 0.0
+    premature_stop_rate = float(np.mean(premature_stop)) if premature_stop else 0.0
+    late_stop_rate = float(np.mean(late_stop)) if late_stop else 0.0
+
     logger.info(f"**{title}")
     logger.info(f"**核心指标 sample_f1:{np.mean(sample_f):.4f}, sample_recall:{np.mean(sample_r):.4f}, sample_precision:{np.mean(sample_p):.4f}, exact_match:{exact_match_avg:.4f}, macro_f1:{macro_f:.4f}")
     logger.info(f"**样本Jaccard(sample_jaccard) avg:{np.mean(sample_j):.4f} max:{np.max(sample_j):.4f} min:{np.min(sample_j):.4f}")
@@ -162,6 +179,8 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
     logger.info(f"**Macro P/R/F1:{macro_p:.4f}/{macro_r:.4f}/{macro_f:.4f}")
     logger.info(f"**HitRate(hit_rate):{hit_rate:.4f}, EmptyPredictionRate(empty_prediction_rate):{empty_prediction_rate:.4f}")
     logger.info(f"**平均推荐数:{np.mean(selected_count):.4f}, 平均真实数:{np.mean(true_count):.4f}, 平均数量误差:{np.mean(cardinality_error):.4f}, 平均多选数:{avg_over_select:.4f}, 平均漏选数:{avg_under_select:.4f}")
+    if trace_sets is not None:
+        logger.info(f"**停止诊断 avg_stop_depth:{avg_stop_depth:.4f}, avg_stop_margin:{avg_stop_margin:.4f}, premature_stop_rate:{premature_stop_rate:.4f}, late_stop_rate:{late_stop_rate:.4f}")
     for action_idx in range(env.Se_action_num):
         logger.info(
             f"**标签[{env.action_space[action_idx]}] "
@@ -193,11 +212,18 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         'avg_cardinality_error': float(np.mean(cardinality_error)),
         'avg_over_select': avg_over_select,
         'avg_under_select': avg_under_select,
+        'avg_stop_depth': avg_stop_depth,
+        'avg_stop_margin': avg_stop_margin,
+        'premature_stop_rate': premature_stop_rate,
+        'late_stop_rate': late_stop_rate,
         'n_test': n_test,
     }
 
 
-def evaluate(env, policy_net, action_selector, device, eval_data, logger, dataset_name="测试集"):
+def evaluate(
+    env, policy_net, action_selector, device, eval_data, logger, dataset_name="测试集",
+    stop_margin_threshold=None, min_actions=0,
+):
     logger.info(f"========== {dataset_name}评估开始 ==========")
     if len(eval_data) == 0:
         logger.info(f"{dataset_name}数据为空，跳过评估")
@@ -205,27 +231,34 @@ def evaluate(env, policy_net, action_selector, device, eval_data, logger, datase
         return {'auto': empty_metrics, 'top2': empty_metrics}
 
     auto_pred_actions = []
+    auto_traces = []
     top2_pred_actions = []
+    top2_traces = []
     true_name_sets = []
 
     for data_piece in eval_data:
         state_np = env.reset(data_piece).copy()
-        auto_pred_actions.append(
-            predict_actions_from_state(env, policy_net, action_selector, device, state_np, force_top_k=None)
+        auto_actions, auto_trace = predict_actions_from_state(
+            env, policy_net, action_selector, device, state_np, force_top_k=None,
+            stop_margin_threshold=stop_margin_threshold, min_actions=min_actions,
+            return_trace=True,
         )
+        auto_pred_actions.append(auto_actions)
+        auto_traces.append(auto_trace)
 
         state_np = env.reset(data_piece).copy()
-        top2_pred_actions.append(
-            predict_actions_from_state(
-                env, policy_net, action_selector, device, state_np,
-                force_top_k=min(2, env.Se_action_num), max_actions=2
-            )
+        top2_actions, top2_trace = predict_actions_from_state(
+            env, policy_net, action_selector, device, state_np,
+            force_top_k=min(2, env.Se_action_num), max_actions=2,
+            return_trace=True,
         )
+        top2_pred_actions.append(top2_actions)
+        top2_traces.append(top2_trace)
 
         true_name_sets.append(data_piece[1])
 
-    auto_metrics = evaluate_prediction_set(env, auto_pred_actions, true_name_sets, f"{dataset_name}-模型自主停止", logger)
-    top2_metrics = evaluate_prediction_set(env, top2_pred_actions, true_name_sets, f"{dataset_name}-固定Top-2诊断", logger)
+    auto_metrics = evaluate_prediction_set(env, auto_pred_actions, true_name_sets, f"{dataset_name}-模型自主停止", logger, trace_sets=auto_traces)
+    top2_metrics = evaluate_prediction_set(env, top2_pred_actions, true_name_sets, f"{dataset_name}-固定Top-2诊断", logger, trace_sets=top2_traces)
     logger.info(f"**{dataset_name} 自主停止 vs Top-2 样本F1: {auto_metrics['sample_f1']:.4f} / {top2_metrics['sample_f1']:.4f}")
     logger.info("========== {0}评估结束 ==========".format(dataset_name))
     return {'auto': auto_metrics, 'top2': top2_metrics}

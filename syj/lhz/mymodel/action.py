@@ -25,7 +25,7 @@ def mask_selected_actions(q_values, selected_actions_batch, env, mask_stop=False
 
 
 class ActionSelector(object):
-    def __init__(self, env, policy_net, n_actions, device, eps_start, eps_end, eps_decay):
+    def __init__(self, env, policy_net, n_actions, device, eps_start, eps_end, eps_decay, min_actions_before_stop=1):
         self.env = env
         self.policy_net = policy_net
         self.n_actions = n_actions
@@ -33,6 +33,7 @@ class ActionSelector(object):
         self.eps_start = eps_start
         self.eps_end = eps_end
         self.eps_decay = eps_decay
+        self.min_actions_before_stop = max(0, min_actions_before_stop)
         self.steps_done = 0
 
     def reset_steps(self):
@@ -46,16 +47,17 @@ class ActionSelector(object):
         )
         self.steps_done += 1
 
+        mask_stop = len(selected_actions) < self.min_actions_before_stop
         if sample > eps_threshold:
             with torch.no_grad():
                 output = self.policy_net(state)
-                output = mask_selected_actions(output, [selected_actions], self.env)
+                output = mask_selected_actions(output, [selected_actions], self.env, mask_stop=mask_stop)
                 action = output.max(1).indices.view(1, 1)
                 return action, "agent", True
 
         valid_actions = [
             action for action in range(self.n_actions)
-            if action == self.env.stop_action or action not in selected_actions
+            if (action != self.env.stop_action or not mask_stop) and (action == self.env.stop_action or action not in selected_actions)
         ]
         action = random.choice(valid_actions)
         return torch.tensor([[action]], device=self.device, dtype=torch.long), "random", False

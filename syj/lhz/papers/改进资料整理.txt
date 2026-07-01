@@ -1,0 +1,382 @@
+================================================================================
+  模型改进参考资料整理 —— 奖励函数建模 & 策略/目标网络训练方法改进
+================================================================================
+整理日期：2026年6月30日
+
+================================================================================
+一、问题诊断
+================================================================================
+
+基于消融实验和对比实验结果，你模型的主要问题：
+1. 消融实验中部分指标不理想 → 奖励函数设计可能需要更精确的引导信号
+2. 对比实验中多个指标不如传统ML方法 → DQN训练过程可能不够稳定，策略/目标网络更新机制需要改进
+
+================================================================================
+二、下载的参考文献清单（共8篇，已保存至本文件夹）
+================================================================================
+
+【论文1】1710.02298_Rainbow_DQN.pdf
+  - 标题：Rainbow: Combining Improvements in Deep Reinforcement Learning
+  - 作者：Hessel, Modayil, van Hasselt, Schaul, Ostrovski, Dabney, Horgan, Piot, Azar, Silver (DeepMind)
+  - 发表：AAAI 2018
+  - 与你模型的相关性：★★★★★
+  - 核心内容：整合了DQN的6大改进——Double DQN、Prioritized Experience Replay、
+    Dueling Networks、Multi-step Learning、Distributional RL、Noisy Networks。
+    详细消融实验分析各组件贡献。
+  - 对你的启发：你当前只用了Double DQN + Dueling + Soft Update，可以考虑加入
+    Prioritized Experience Replay（优先经验回放）和 Noisy Networks（噪声网络）来
+    提升探索效率和训练稳定性。
+
+【论文2】2302.10261_Deep_RL_Cost_Effective_Medical_Diagnosis.pdf
+  - 标题：Deep Reinforcement Learning for Cost-Effective Medical Diagnosis
+  - 作者：Zheng Yu, Yikuan Li, Joseph Kim, Kaixuan Huang, Yuan Luo, Mengdi Wang
+  - 发表：ICLR 2023
+  - 与你模型的相关性：★★★★★（最直接相关）
+  - 核心内容：针对医学诊断中的F1分数优化问题（非凹函数，标准RL无法直接优化），
+    提出奖励塑形(Reward Shaping)方法，利用F1分数的性质和策略优化的对偶性，
+    可证明地找到预算约束下最大化F1的所有Pareto最优策略。
+  - GitHub代码：https://github.com/Zheng321/Deep-Reinforcement-Learning-for-Cost-Effective-Medical-Diagnosis
+  - 对你的启发：
+    a) 你当前的奖励函数是手工设计的（true_positive_base + delta_f1_scale等），
+       而这篇论文提供了基于F1分数性质的数学化奖励塑形框架
+    b) 他们的SM-DDPO框架可以处理组合状态空间，与你的辨证过程类似
+    c) 他们的奖励塑形方法可以"可证明地"找到最优策略，有理论保证
+
+【论文3】2411.03820_Beyond_The_Rainbow.pdf
+  - 标题：Beyond The Rainbow: High Performance Deep Reinforcement Learning on a Desktop PC
+  - 作者：Tyler Clark, Mark Towers, Christine Evers, Jonathon Hare
+  - 发表：ICML 2025 (Poster)
+  - 与你模型的相关性：★★★★
+  - 核心内容：在Rainbow DQN基础上整合6项新改进，Atari-60达到IQM 7.4。
+    对每个组件进行了详细消融研究。开源代码。
+  - 对你的启发：了解哪些改进组件在当前最有效，可以参考其消融研究结果，
+    优先选择收益最大的组件加入你的模型
+
+【论文4】2501.00989_Bootstrapped_Reward_Shaping.pdf
+  - 标题：Bootstrapped Reward Shaping (BSRS)
+  - 作者：Jacob Adamczyk, Volodymyr Makarenko, Stas Tiomkin, Rahul V. Kulkarni
+  - 发表：AAAI 2025
+  - 与你模型的相关性：★★★★
+  - 核心内容：提出自举式奖励塑形(BSRS)——让智能体当前对状态价值函数的估计V(s)
+    直接充当PBRS所需的势函数，无需人工设计复杂的势函数。在Atari上验证有效。
+  - 对你的启发：
+    a) 你的奖励函数目前是手工设计的（大量超参数如true_positive_base=1.0等），
+       BSRS的思想可以自动化奖励塑形过程
+    b) 可以让你的Dueling DQN中的Value Stream输出作为势函数来生成塑形奖励，
+       减少对手工奖励超参数的依赖
+
+【论文5】2502.01307_Improving_PBRS_Effectiveness.pdf
+  - 标题：Improving the Effectiveness of Potential-Based Reward Shaping in RL
+  - 作者：Henrik Müller, Daniel Kudenko
+  - 发表：AAMAS 2025 (Extended Abstract)
+  - 与你模型的相关性：★★★
+  - 核心内容：揭示PBRS有效性依赖于初始Q值和外部奖励的相互作用。
+    提出通过势函数的简单线性平移，在无需调整初始Q值的情况下提升奖励塑形效果。
+  - 对你的启发：
+    a) 你的模型有监督预训练阶段初始化Q网络，这会影响后续RL中奖励塑形的效果
+    b) 可以考虑对势函数（或奖励函数中的某些项）做线性平移来优化奖励引导
+
+【论文6】2508.18474_DRTA_Dynamic_Reward_Scaling.pdf
+  - 标题：DRTA: Dynamic Reward Scaling for Reinforcement Learning in Time Series Anomaly Detection
+  - 作者：Bahareh Golchin, Banafsheh Rekabdar, Kunpeng Liu
+  - 发表：IEEE AIxSET 2025
+  - 与你模型的相关性：★★★
+  - 核心内容：提出动态奖励缩放框架DRTA，通过自适应奖励机制动态缩放VAE重构误差
+    和分类奖励的影响，平衡探索与利用。
+  - 对你的启发：
+    a) 你的奖励函数中有多个组件（true_positive_base, delta_f1_scale, step_penalty等），
+       可以借鉴DRTA的动态缩放思想，让各奖励项的权重在训练过程中自适应调整
+    b) 训练初期可能更需要探索性奖励，后期则更应强调精确匹配
+
+【论文7】2602.09810_Double_vs_Dueling_DQN_Transfer.pdf
+  - 标题：A Controlled Study of Double DQN and Dueling DQN Under Cross-Environment Transfer
+  - 作者：Azkaa Nasir, Fatima Dossa, Muhammad Ahmed Atif, Mohammad Shahid Shaikh
+  - 发表：2026年arXiv
+  - 与你模型的相关性：★★★★
+  - 核心内容：通过受控实验发现Dueling DQN在跨环境迁移时存在显著的负迁移和不稳定性
+    （奖励退化、优化不稳定），而Double DQN表现稳健。
+  - 对你的启发：
+    a) 你的模型默认使用Dueling DQN架构，这篇论文的发现可能是你的模型在对比实验中
+       表现不佳的原因之一
+    b) 建议：尝试使用标准DQN（带LayerNorm的那个版本）替代Dueling DQN进行对比
+    c) 或者考虑在Dueling DQN中增加额外的正则化手段来缓解不稳定性
+
+【论文8】2512.22186_Curriculum_Dueling_DDQN.pdf
+  - 标题：Learning Tennis Strategy Through Curriculum-Based Dueling Double Deep Q-Networks
+  - 作者：Vishnu Mohan
+  - 发表：2025年arXiv
+  - 与你模型的相关性：★★★
+  - 核心内容：将课程学习与Dueling Double DQN结合。消融实验证明：不用课程学习会
+    导致训练崩溃，Dueling架构和课程学习两者缺一不可才能稳定收敛。标准DQN在此任务
+    中无法学习有效策略。
+  - 对你的启发：
+    a) 你目前的训练是随机shuffle所有训练数据，可以考虑引入课程学习：
+       先训练简单的病例（如证候要素少的），逐步过渡到复杂的
+    b) 课程学习能显著提升Dueling DQN的训练稳定性
+
+================================================================================
+三、具体改进建议
+================================================================================
+
+【改进方向1：奖励函数建模】
+
+1.1 引入F1分数的数学化奖励塑形（参考论文2）
+  - 当前问题：奖励函数是手工启发式设计的，有大量超参数
+  - 改进思路：参考ICLR 2023论文的reward shaping方法，基于F1分数的性质和
+    对偶优化理论来设计奖励函数
+  - 具体做法：
+    a) 将F1分数的优化转化为RL可处理的形式
+    b) 利用reward shaping保证策略不变性的同时提供更精确的梯度信号
+    c) 可以参考他们开源的GitHub代码
+
+1.2 采用自举式奖励塑形BSRS（参考论文4）
+  - 当前问题：需要手动调整true_positive_base, delta_f1_scale等大量奖励超参数
+  - 改进思路：用Dueling DQN中的Value Stream输出V(s)作为势函数
+  - 具体做法：
+    a) 塑形奖励 F(s,a,s') = gamma * V(s') - V(s)
+    b) 将F(s,a,s')加到环境奖励上
+    c) 这样可以自动化奖励塑形，减少超参数调优
+
+1.3 引入动态奖励缩放（参考论文6）
+  - 当前问题：所有奖励项权重固定，不能适应不同训练阶段
+  - 改进思路：训练初期增大探索性奖励权重，后期增大精确匹配奖励权重
+  - 具体做法：
+    a) 使用训练进度相关的缩放因子（如随episode衰减的系数）
+    b) 或者基于当前episode的平均F1来动态调整各奖励项权重
+
+1.4 改进终止奖励设计
+  - 当前问题：终止奖励（stop_exact_reward=4.0等）是固定值
+  - 改进思路：
+    a) 将终止奖励也纳入delta_f1的计算框架
+    b) 考虑使用F1的边际增益作为终止奖励
+    c) 对过早停止（还没选够标签）施加与剩余真实标签数量成比例的惩罚
+
+【改进方向2：策略网络和目标网络训练方法】
+
+2.1 引入优先经验回放（Prioritized Experience Replay）（参考论文1 Rainbow DQN）
+  - 当前问题：使用均匀随机采样，可能导致重要经验被"浪费"
+  - 改进思路：基于TD误差的绝对值来采样，TD误差大的transition优先被学习
+  - 具体做法：
+    a) 在ReplayMemory中维护每个transition的优先级（基于|TD_error| + epsilon）
+    b) 使用SumTree数据结构实现O(log N)的采样和更新
+    c) 重要性采样权重来修正优先采样引入的偏差
+  - 预期效果：提升样本效率，加速收敛，特别对稀有证候要素的学习有帮助
+
+2.2 引入噪声网络（Noisy Networks）（参考论文1 Rainbow DQN）
+  - 当前问题：epsilon-greedy探索策略在训练后期探索不足
+  - 改进思路：用参数化的噪声替代epsilon-greedy，在网络权重中加入可学习的噪声
+  - 具体做法：
+    a) 将网络中的Linear层替换为NoisyLinear
+    b) 噪声参数通过梯度下降学习，网络自动决定探索程度
+    c) 不同状态下探索程度不同（状态依赖探索）
+  - 预期效果：比epsilon-greedy更智能的探索，在复杂状态空间（如你的辨证场景）中特别有效
+
+2.3 改进目标网络更新策略
+  当前：Soft Update, tau=0.01（每5个transition更新一次）
+  
+  改进建议A：周期性硬更新 + 软更新混合
+    - 每N个episode做一次硬更新（完全复制），其他时候用软更新
+    - 或者：训练初期用软更新，训练后期切换为周期性硬更新
+  
+  改进建议B：调整更新频率
+    - 当前每5步更新一次可能过于频繁（目标网络变化太快）
+    - 尝试每50-100步或每个episode结束时更新一次
+    - 参考原始DQN论文的做法：每C步硬更新一次
+
+  改进建议C：考虑不使用Dueling架构（参考论文7）
+    - 论文7发现Dueling DQN存在跨环境不稳定性
+    - 可以尝试使用你的标准DQN（带LayerNorm的版本）替代Dueling DQN
+    - 或者只在预训练阶段使用Dueling，RL阶段切换为标准DQN
+
+2.4 引入Multi-step Learning（参考论文1 Rainbow DQN）
+  - 当前问题：使用单步TD目标（只考虑即时奖励）
+  - 改进思路：使用n步回报作为TD目标
+  - 具体做法：
+    a) 目标改为 R_t^(n) = sum_{k=0}^{n-1} gamma^k * r_{t+k} + gamma^n * max_a Q(s_{t+n}, a)
+    b) 在你的辨证场景中，n步可以对应连续选择n个证候要素
+    c) 这能更好地传递奖励信号，特别是对长序列（证候要素多）的病例
+
+2.5 引入课程学习（参考论文8）
+  - 当前问题：所有难度的训练样本随机混合训练
+  - 改进思路：先训练简单病例（证候要素少），再逐步过渡到复杂病例
+  - 具体做法：
+    a) 按真实证候要素数量对训练样本分组
+    b) 训练初期只用1-2个证候要素的病例
+    c) 逐步增加更多证候要素的病例
+  - 预期效果：提升训练稳定性，避免训练崩溃
+
+2.6 改进辅助监督损失
+  - 当前问题：aux_supervised_weight=0.05可能太小
+  - 改进思路：
+    a) 训练初期使用较大的辅助损失权重（如0.5），后期逐步衰减到0.05
+    b) 或者在每个episode内部按病例难度动态调整辅助损失权重
+    c) 考虑用F1分数而非BCE作为辅助损失
+
+================================================================================
+四、推荐的改进优先级
+================================================================================
+
+第一优先级（最可能带来显著提升）：
+  1. 优先经验回放 (PER) —— 论文1，实现相对简单，收益明显
+  2. 参考论文2的F1奖励塑形框架 —— 与你的任务最直接相关
+  3. 调整目标网络更新频率 —— 超参数调整，成本最低
+
+第二优先级（中等投入，中等收益）：
+  4. 噪声网络 (Noisy Nets) —— 替代epsilon-greedy，论文1
+  5. 课程学习 —— 论文8，特别适合Dueling架构
+  6. 自举式奖励塑形 (BSRS) —— 论文4，减少超参数
+
+第三优先级（需要较大改动）：
+  7. Multi-step Learning —— 论文1
+  8. 动态奖励缩放 —— 论文6
+  9. 分布化RL (Distributional RL) —— 论文1
+
+================================================================================
+五、快速验证方案
+================================================================================
+
+建议的快速实验方案（按顺序尝试）：
+
+实验A：调整tau和更新频率
+  - tau从0.01改为0.005（更慢的目标网络更新）
+  - 更新频率从每5步改为每50步或每episode
+  - 预期：训练更稳定
+
+实验B：使用标准DQN替代Dueling DQN
+  - 切换为model.py中的DQN（带LayerNorm）版本
+  - 预期：消除Dueling可能的不稳定性（参考论文7）
+
+实验C：加入优先经验回放
+  - 修改memory.py，引入优先级采样
+  - 预期：样本效率提升，稀有标签学习更好
+
+实验D：课程学习
+  - 按证候要素数量排序训练数据
+  - 预期：训练稳定性提升
+
+================================================================================
+六、相关开源代码
+================================================================================
+
+1. Rainbow DQN官方实现：https://github.com/google/dopamine
+2. 论文2（医学诊断RL）代码：https://github.com/Zheng321/Deep-Reinforcement-Learning-for-Cost-Effective-Medical-Diagnosis
+3. Beyond The Rainbow代码：https://github.com/VIPTankz/BTR
+4. Stable-Baselines3（含DQN改进实现）：https://github.com/DLR-RM/stable-baselines3
+
+================================================================================
+七、补充文献：强化学习解决无序集合/序列预测问题
+================================================================================
+
+你的辨证模型的核心特点：从症状预测一组证候要素（多标签集合），且标签之间
+没有天然的顺序关系。这与以下研究领域高度相关。
+
+【论文9】1809.03118_Deep_Reinforced_Sequence_to_Set.pdf
+  - 标题：A Deep Reinforced Sequence-to-Set Model for Multi-Label Text Classification
+  - 作者：Pengcheng Yang, Shuming Ma, Yi Zhang, Junyang Lin, Qi Su, Xu Sun
+  - 发表：2018年arXiv
+  - 与你模型的相关性：★★★★★（最直接的同类工作）
+  - 核心内容：明确指出多标签分类的输出标签本质是无序集合（unordered set）而非
+    有序序列。传统Seq2Seq模型要求预定义标签顺序，与多标签本质冲突。
+    提出深度强化学习驱动的Sequence-to-Set框架，既能捕捉标签相关性，又减少对
+    标签顺序的依赖。
+  - 对你的启发：
+    a) 这篇论文与你的工作思路最接近——都是用RL做多标签/证候要素的序列预测
+    b) 关键区别：他们的Sequence-to-Set方法专门设计了机制来消除顺序依赖，
+       而你的模型目前是用随机顺序的训练样本做数据增强来近似处理
+    c) 可以参考他们如何用RL来减少对顺序的依赖，而不是依赖数据增强
+
+【论文10】1709.04093_Set_Cardinality_State_Distribution.pdf
+  - 标题：Joint Learning of Set Cardinality and State Distribution
+  - 作者：S. Hamid Rezatofighi, Anton Milan, Qinfeng Shi, Anthony Dick, Ian Reid
+  - 发表：AAAI 2018
+  - 与你模型的相关性：★★★★
+  - 核心内容：提出排列不变（permutation invariant）的集合预测方法，联合学习
+    集合基数（元素数量）和状态分布（元素特征）。在多标签图像分类（PASCAL VOC
+    和MS COCO）上达到最优结果。
+  - 对你的启发：
+    a) 你的模型目前没有显式建模"证候要素数量"（集合基数）
+    b) 可以考虑先预测证候要素数量，再基于数量约束进行选择，提高精度
+    c) 排列不变性保证无论以什么顺序输出证候要素，结果都是等价的
+
+【论文11】2304.12828_PrescDRL.pdf
+  - 标题：A Optimization Framework for Herbal Prescription Planning Based on
+    Deep Reinforcement Learning (PrescDRL)
+  - 作者：Kuo Yang, Zecong Yu, Xin Su, Xiong He, Ning Wang, Qiguang Zheng,
+    Feidie Yu, Zhuang Liu, Tiancai Wen, Xuezhong Zhou
+  - 发表：2023年arXiv
+  - 与你模型的相关性：★★★★★（中医+RL，最直接相关）
+  - 核心内容：提出基于深度强化学习的中药处方规划框架，用于慢性病序贯治疗优化。
+    关注长期疗效而非单步最大奖励。在糖尿病数据集上：
+    - 单步奖励相比医生提升117%-153%
+    - 处方精度提升40.5%，召回率提升63%
+  - 对你的启发：
+    a) 这篇论文与你的工作场景几乎一致：中医 + RL + 多标签（中药处方是多标签）
+    b) 他们的奖励设计强调长期疗效，而非贪心选择——这正是你当前模型可能缺少的
+    c) 可以参考他们的序贯优化框架来改进你的辨证过程
+    d) 注意：他们的任务（处方规划）和你的任务（辨证）有区别但高度相关
+
+【论文12】2502.04345_JingFang_LLM_TCM.pdf
+  - 标题：Jingfang: An LLM-Based Multi-Agent System for Precise Medical
+    Consultation and Syndrome Differentiation in Traditional Chinese Medicine
+  - 作者：Yehan Yang, Tianhao Ma, Ruotai Li, Xinhan Zheng, Guodong Shan
+  - 发表：2025年arXiv
+  - 与你模型的相关性：★★★
+  - 核心内容：基于大语言模型的多智能体中医辨证论治系统，辨证精度相比现有中医
+    模型提升124%，相比SOTA LLM提升21.1%。
+  - 对你的启发：
+    a) 虽然不是RL方法，但展示了中医辨证领域的最新进展
+    b) 可以作为你论文中讨论的相关工作/未来方向
+    c) 多智能体协作的思路可能对RL多智能体辨证有帮助
+
+================================================================================
+八、与你的模型最相关的关键研究对比
+================================================================================
+
+你的模型的核心设定：
+  - 任务：症状 → 证候要素（多标签集合）
+  - 方法：Dueling Double DQN，顺序选择证候要素，选择完停止
+  - 特点：标签之间无天然顺序，但你用顺序RL建模
+
+对比论文9（Sequence-to-Set）的异同：
+  - 相同：都用RL做无序多标签预测
+  - 不同：论文9专门设计了机制消除顺序依赖，你通过随机排列数据增强近似处理
+  - 启示：可以参考论文9的方法，在RL框架中显式建模"无序性"
+
+对比论文11（PrescDRL）的异同：
+  - 相同：都是中医 + RL + 多标签输出
+  - 不同：PrescDRL关注长期疗效优化，你的模型关注单次辨证准确率
+  - 启示：可以考虑引入"长期疗效"或"整体辨证质量"的奖励视角
+
+对比论文10（Set Cardinality）的异同：
+  - 相同：都是多标签集合预测
+  - 不同：论文10是监督学习方法，你是RL方法
+  - 启示：可以引入"先预测证候要素数量"的机制来约束RL的选择过程
+
+================================================================================
+九、针对"无序集合预测"的改进思路
+================================================================================
+
+问题：你的RL模型将证候要素选择建模为有序序列决策过程，但证候要素本质上是
+无序集合。训练时通过随机排列数据增强来缓解，但不够根本。
+
+改进思路1：引入Order-Agnostic训练（参考论文9）
+  - 对同一个病例生成多个不同顺序的标签排列
+  - 对所有排列的Q值取平均或取max作为最终Q值
+  - 让模型学会"不管什么顺序，最终选择的集合应该相同"
+
+改进思路2：集合基数预测 + 约束RL（参考论文10）
+  - 先用一个轻量级模型预测"该病例可能有多少个证候要素"
+  - 在RL选择过程中，用预测的基数作为soft约束（如：接近基数时鼓励停止）
+  - 可以大幅减少"选太多"或"选太少"的错误
+
+改进思路3：基于F1的奖励重设计（参考论文11）
+  - 将奖励从"单步贪心"改为"最终F1最大化"
+  - 允许中间步骤有负奖励（如选了错误的），但最终如果F1高则给大奖励
+  - 这更符合辨证的"整体准确"目标
+
+改进思路4：停止机制的改进
+  - 当前：固定阈值判断是否停止
+  - 改进：学习一个"置信度阈值"，当所有未选标签的Q值都低于阈值时停止
+  - 或者：引入"停止Q值"，让网络学习何时停止最优
+
+================================================================================

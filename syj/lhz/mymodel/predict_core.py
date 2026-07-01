@@ -5,10 +5,12 @@
 执行普通预测和逐步轨迹预测。
 """
 
+import math
 import os
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 STOP_ACTION = "停止"
 NEG_INF = -1e9
@@ -18,6 +20,37 @@ device = torch.device(
     "mps" if torch.backends.mps.is_available() else
     "cpu"
 )
+
+
+class NoisyLinear(nn.Module):
+    def __init__(self, in_features, out_features, sigma_init=0.017):
+        super(NoisyLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.sigma_init = sigma_init
+        self.mu_weight = nn.Parameter(torch.empty(out_features, in_features, dtype=torch.float32, device='cpu'))
+        self.sigma_weight = nn.Parameter(torch.empty(out_features, in_features, dtype=torch.float32, device='cpu'))
+        self.mu_bias = nn.Parameter(torch.empty(out_features, dtype=torch.float32, device='cpu'))
+        self.sigma_bias = nn.Parameter(torch.empty(out_features, dtype=torch.float32, device='cpu'))
+        self.register_buffer('epsilon_weight', torch.zeros(out_features, in_features, dtype=torch.float32))
+        self.register_buffer('epsilon_bias', torch.zeros(out_features, dtype=torch.float32))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        bound = 1 / math.sqrt(self.in_features)
+        self.mu_weight.data.uniform_(-bound, bound)
+        self.mu_bias.data.uniform_(-bound, bound)
+        self.sigma_weight.data.fill_(self.sigma_init / math.sqrt(self.in_features))
+        self.sigma_bias.data.fill_(self.sigma_init / math.sqrt(self.out_features))
+
+    def forward(self, x):
+        return F.linear(x, self.mu_weight, self.mu_bias)
+
+
+def linear_layer(in_features, out_features, noisy=False):
+    if noisy:
+        return NoisyLinear(in_features, out_features)
+    return nn.Linear(in_features, out_features, dtype=torch.float32, device='cpu')
 
 
 class DQNLegacy(nn.Module):
@@ -55,6 +88,23 @@ class DQN(nn.Module):
         return self.net(x)
 
 
+class ResidualBlock(nn.Module):
+    def __init__(self, n_units, dropout=0.1, noisy=False):
+        super(ResidualBlock, self).__init__()
+        self.block = nn.Sequential(
+            linear_layer(n_units, n_units, noisy=noisy),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            linear_layer(n_units, n_units, noisy=noisy),
+            nn.LayerNorm(n_units),
+        )
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        return self.activation(x + self.block(x))
+
+
 class DuelingDQN(nn.Module):
     def __init__(self, state_vector_len, n_actions, n_units=256, n_units2=128, dropout=0.15):
         super(DuelingDQN, self).__init__()
@@ -86,12 +136,116 @@ class DuelingDQN(nn.Module):
         return value + advantage - advantage.mean(dim=1, keepdim=True)
 
 
+class ResidualDuelingDQN(nn.Module):
+    def __init__(self, state_vector_len, n_actions, n_units=256, n_units2=128, dropout=0.15):
+        super(ResidualDuelingDQN, self).__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(state_vector_len, n_units, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            ResidualBlock(n_units, dropout),
+            ResidualBlock(n_units, dropout),
+            nn.Linear(n_units, n_units2, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.value_stream = nn.Sequential(
+            nn.Linear(n_units2, n_units2, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Linear(n_units2, 1, dtype=torch.float32, device='cpu'),
+        )
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(n_units2, n_units2, dtype=torch.float32, device='cpu'),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Linear(n_units2, n_actions, dtype=torch.float32, device='cpu'),
+        )
+
+    def forward(self, x):
+        features = self.feature(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
+
+
+class SetAwareDuelingDQN(nn.Module):
+    def __init__(self, state_vector_len, n_actions, n_units=256, n_units2=128, dropout=0.15, noisy=False):
+        super(SetAwareDuelingDQN, self).__init__()
+        self.Se_action_num = n_actions - 1
+        self.symp_len = state_vector_len - self.Se_action_num
+        if self.symp_len <= 0 or self.Se_action_num <= 0:
+            raise ValueError('set_dueling需要状态向量由症状块和证候要素块组成')
+
+        self.symptom_encoder = nn.Sequential(
+            linear_layer(self.symp_len, n_units, noisy=noisy),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            ResidualBlock(n_units, dropout, noisy=noisy),
+        )
+        self.selected_encoder = nn.Sequential(
+            linear_layer(self.Se_action_num, n_units, noisy=noisy),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            ResidualBlock(n_units, dropout, noisy=noisy),
+        )
+        self.joint = nn.Sequential(
+            linear_layer(n_units * 3, n_units, noisy=noisy),
+            nn.LayerNorm(n_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            ResidualBlock(n_units, dropout, noisy=noisy),
+            linear_layer(n_units, n_units2, noisy=noisy),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.value_stream = nn.Sequential(
+            linear_layer(n_units2, n_units2, noisy=noisy),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            linear_layer(n_units2, 1, noisy=noisy),
+        )
+        self.advantage_stream = nn.Sequential(
+            linear_layer(n_units2, n_units2, noisy=noisy),
+            nn.LayerNorm(n_units2),
+            nn.ReLU(),
+            linear_layer(n_units2, n_actions, noisy=noisy),
+        )
+
+    def forward(self, x):
+        symptom_state = x[:, :self.symp_len]
+        selected_state = x[:, self.symp_len:self.symp_len + self.Se_action_num]
+        symptom_features = self.symptom_encoder(symptom_state)
+        selected_features = self.selected_encoder(selected_state)
+        features = self.joint(torch.cat([
+            symptom_features,
+            selected_features,
+            symptom_features * selected_features,
+        ], dim=1))
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
+
+
 def build_q_network(model_type, state_vector_len, n_actions, n_units=128, n_units2=64, dropout=0.1):
     if model_type == 'dqn_legacy':
         return DQNLegacy(state_vector_len, n_actions, n_units, n_units2, dropout)
+    if model_type == 'dqn':
+        return DQN(state_vector_len, n_actions, n_units, n_units2, dropout)
     if model_type == 'dueling':
         return DuelingDQN(state_vector_len, n_actions, n_units, n_units2, dropout)
-    return DQN(state_vector_len, n_actions, n_units, n_units2, dropout)
+    if model_type == 'dueling_residual':
+        return ResidualDuelingDQN(state_vector_len, n_actions, n_units, n_units2, dropout)
+    if model_type == 'set_dueling':
+        return SetAwareDuelingDQN(state_vector_len, n_actions, n_units, n_units2, dropout, noisy=False)
+    if model_type == 'set_dueling_noisy':
+        return SetAwareDuelingDQN(state_vector_len, n_actions, n_units, n_units2, dropout, noisy=True)
+    raise ValueError(f'未知Q网络类型: {model_type}')
 
 
 class Environment(object):
@@ -242,7 +396,7 @@ def mask_selected_actions(q_values, selected_actions, env):
     return masked
 
 
-def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=None):
+def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=None, stop_margin_threshold=None, min_actions=0):
     """给定症状列表，模型自主选择证候要素，直到选择停止或达到上限。"""
     model.eval()
     state_np = env.reset(symptoms_list)
@@ -254,7 +408,20 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
             q_values = model(state_tensor)
 
-            mask_stop = force_top_k is not None and len(selected_actions) < force_top_k
+            mask_stop = (force_top_k is not None and len(selected_actions) < force_top_k) or len(selected_actions) < min_actions
+            label_q = q_values[:, :env.Se_action_num].clone()
+            for action_idx in selected_actions:
+                if 0 <= action_idx < env.Se_action_num:
+                    label_q[0, action_idx] = NEG_INF
+            best_label_q = label_q.max(1).values
+            stop_q = q_values[:, env.stop_action]
+            if (
+                force_top_k is None
+                and stop_margin_threshold is not None
+                and len(selected_actions) >= min_actions
+                and (stop_q - best_label_q).item() >= stop_margin_threshold
+            ):
+                break
             if mask_stop:
                 q_values[0, env.stop_action] = NEG_INF
             q_values = mask_selected_actions(q_values, selected_actions, env)
@@ -297,7 +464,7 @@ def top_candidates_from_q_values(q_values, env, candidate_topk):
     return candidates
 
 
-def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_actions=None, candidate_topk=0):
+def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_actions=None, candidate_topk=0, stop_margin_threshold=None, min_actions=0):
     """给定症状列表，返回模型逐步选择证候要素的轨迹。"""
     model.eval()
     state_np = env.reset(symptoms_list)
@@ -310,12 +477,25 @@ def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_acti
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
             q_values = model(state_tensor)
 
-            mask_stop = force_top_k is not None and len(selected_actions) < force_top_k
+            mask_stop = (force_top_k is not None and len(selected_actions) < force_top_k) or len(selected_actions) < min_actions
+            label_q = q_values[:, :env.Se_action_num].clone()
+            for selected_action in selected_actions:
+                if 0 <= selected_action < env.Se_action_num:
+                    label_q[0, selected_action] = NEG_INF
+            best_label_q, best_label_action = label_q.max(1)
+            stop_q = q_values[:, env.stop_action]
+            threshold_stop = (
+                force_top_k is None
+                and stop_margin_threshold is not None
+                and len(selected_actions) >= min_actions
+                and (stop_q - best_label_q).item() >= stop_margin_threshold
+            )
+
             if mask_stop:
                 q_values[0, env.stop_action] = NEG_INF
             q_values = mask_selected_actions(q_values, selected_actions, env)
 
-            action_idx = q_values.max(1).indices.item()
+            action_idx = env.stop_action if threshold_stop else q_values.max(1).indices.item()
             selected_before = [env.action_space[idx] for idx in selected_actions]
             is_stop = action_idx == env.stop_action
             steps.append({
@@ -324,7 +504,11 @@ def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_acti
                 'action': env.action_space[action_idx],
                 'action_index': int(action_idx),
                 'is_stop': is_stop,
-                'q_value': float(q_values[0, action_idx].item()),
+                'q_value': float(stop_q.item() if is_stop else q_values[0, action_idx].item()),
+                'best_label_q': float(best_label_q.item()),
+                'best_label_action': int(best_label_action.item()),
+                'stop_margin': float((stop_q - best_label_q).item()),
+                'threshold_stop': threshold_stop,
                 'top_candidates': top_candidates_from_q_values(q_values, env, candidate_topk),
             })
 
