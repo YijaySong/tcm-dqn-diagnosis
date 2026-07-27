@@ -1,0 +1,8 @@
+监督、示范与 RL 组成消融
+结果目录：D:\DaiMa\syj\lhz\mymodel_v1\ablations\results\supervision_components\20260719_101633
+冻结主配置版本：2026-07-17-v7-cleaned-data
+方案选择依据：验证集跨 seed 指标；测试集不参与方案选择。
+Supported Macro-F1 最优：去掉辅助监督（0.5622）
+样本 F1 最优：完整混合模型（0.7806）
+最终人工综合选择：完整混合模型（预训练 + 示范 Replay + 辅助监督 + RL）。
+注意：误差线明显重叠时，不应仅凭均值判断组件重要性。

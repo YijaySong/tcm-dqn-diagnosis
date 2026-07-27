@@ -381,6 +381,9 @@ def load_recommender(model_path=None, data_path=None, nn_units=128, nn_units2=64
         metadata['data_path'] = resolved_data_path
 
     env = Environment(symptoms, Se)
+    training_config = metadata.get('training_config', {}) if isinstance(metadata, dict) else {}
+    env.default_min_actions = int(training_config.get('min_actions_before_stop', 0) or 0)
+    env.default_stop_margin_threshold = training_config.get('stop_margin_threshold')
     model = build_q_network(model_type, len(env.state_space), len(env.action_space), nn_units, nn_units2, dropout).to(device)
     model.load_state_dict(model_state_dict)
     model.eval()
@@ -396,19 +399,23 @@ def mask_selected_actions(q_values, selected_actions, env):
     return masked
 
 
-def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=None, stop_margin_threshold=None, min_actions=0):
+def predict_symptoms(model, env, symptoms_list, max_actions=None, stop_margin_threshold=None, min_actions=None):
     """给定症状列表，模型自主选择证候要素，直到选择停止或达到上限。"""
     model.eval()
     state_np = env.reset(symptoms_list)
     selected_actions = []
     max_actions = env.Se_action_num if max_actions is None else min(max_actions, env.Se_action_num)
+    if min_actions is None:
+        min_actions = int(getattr(env, 'default_min_actions', 0) or 0)
+    if stop_margin_threshold is None:
+        stop_margin_threshold = getattr(env, 'default_stop_margin_threshold', None)
 
     with torch.no_grad():
         while len(selected_actions) < max_actions:
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
             q_values = model(state_tensor)
 
-            mask_stop = (force_top_k is not None and len(selected_actions) < force_top_k) or len(selected_actions) < min_actions
+            mask_stop = len(selected_actions) < min_actions
             label_q = q_values[:, :env.Se_action_num].clone()
             for action_idx in selected_actions:
                 if 0 <= action_idx < env.Se_action_num:
@@ -416,8 +423,7 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
             best_label_q = label_q.max(1).values
             stop_q = q_values[:, env.stop_action]
             if (
-                force_top_k is None
-                and stop_margin_threshold is not None
+                stop_margin_threshold is not None
                 and len(selected_actions) >= min_actions
                 and (stop_q - best_label_q).item() >= stop_margin_threshold
             ):
@@ -432,9 +438,6 @@ def predict_symptoms(model, env, symptoms_list, force_top_k=None, max_actions=No
 
             selected_actions.append(action_idx)
             state_np[env.symp_len + action_idx] = 1
-
-            if force_top_k is not None and len(selected_actions) >= force_top_k:
-                break
 
     return [env.action_space[idx] for idx in selected_actions]
 
@@ -464,20 +467,24 @@ def top_candidates_from_q_values(q_values, env, candidate_topk):
     return candidates
 
 
-def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_actions=None, candidate_topk=0, stop_margin_threshold=None, min_actions=0):
+def predict_symptoms_trace(model, env, symptoms_list, max_actions=None, candidate_topk=0, stop_margin_threshold=None, min_actions=None):
     """给定症状列表，返回模型逐步选择证候要素的轨迹。"""
     model.eval()
     state_np = env.reset(symptoms_list)
     selected_actions = []
     steps = []
     max_actions = env.Se_action_num if max_actions is None else min(max_actions, env.Se_action_num)
+    if min_actions is None:
+        min_actions = int(getattr(env, 'default_min_actions', 0) or 0)
+    if stop_margin_threshold is None:
+        stop_margin_threshold = getattr(env, 'default_stop_margin_threshold', None)
 
     with torch.no_grad():
         while len(selected_actions) < max_actions:
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
             q_values = model(state_tensor)
 
-            mask_stop = (force_top_k is not None and len(selected_actions) < force_top_k) or len(selected_actions) < min_actions
+            mask_stop = len(selected_actions) < min_actions
             label_q = q_values[:, :env.Se_action_num].clone()
             for selected_action in selected_actions:
                 if 0 <= selected_action < env.Se_action_num:
@@ -485,8 +492,7 @@ def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_acti
             best_label_q, best_label_action = label_q.max(1)
             stop_q = q_values[:, env.stop_action]
             threshold_stop = (
-                force_top_k is None
-                and stop_margin_threshold is not None
+                stop_margin_threshold is not None
                 and len(selected_actions) >= min_actions
                 and (stop_q - best_label_q).item() >= stop_margin_threshold
             )
@@ -518,9 +524,6 @@ def predict_symptoms_trace(model, env, symptoms_list, force_top_k=None, max_acti
             selected_actions.append(action_idx)
             state_np[env.symp_len + action_idx] = 1
 
-            if force_top_k is not None and len(selected_actions) >= force_top_k:
-                break
-
     return {
         'recommendations': [env.action_space[idx] for idx in selected_actions],
         'steps': steps,
@@ -542,11 +545,9 @@ def format_selected(names):
     return ', '.join(names) if names else '无'
 
 
-def print_trace_prediction(trace_result, known_symptoms, fixed_topk=None):
+def print_trace_prediction(trace_result, known_symptoms):
     """打印逐步辨证过程。"""
     print(f"  输入刻下症: {format_selected(known_symptoms)}")
-    if fixed_topk:
-        print(f"  [说明] 固定Top-{fixed_topk}模式：前{fixed_topk}步会屏蔽停止动作，不代表模型自主停止。")
     print("\n  === DQN辨证过程 ===")
 
     steps = trace_result.get('steps', [])

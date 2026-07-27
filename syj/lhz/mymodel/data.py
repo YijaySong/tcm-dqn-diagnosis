@@ -220,20 +220,51 @@ def export_split_data(train_data, test_data, output_dir, seed, test_ratio, logge
     return train_path, test_path
 
 
-def compute_Se_weights(training_data, env, logger=None, min_weight=0.75, max_weight=2.5, power=0.5):
+def compute_Se_weights(
+    training_data, env, logger=None, min_weight=0.75, max_weight=1.5,
+    power=0.5, method='log', log_scale=0.65,
+):
+    """根据训练集support计算证候要素奖励权重。
+
+    ``power`` 保留旧版幂函数加权；``log`` 使用对数稀有度压缩，避免
+    支持度只有1-2例的极端长尾标签在奖励中和中等长尾标签一起顶到上限。
+    """
     freq = Counter()
     for _, Se_names in training_data:
         for Se_name in Se_names:
             freq[env.swapped_action_space[Se_name]] += 1
+
     total = sum(freq.values())
+    max_count = max(freq.values()) if freq else 1
     weights = {}
     for action_idx in range(env.Se_action_num):
-        count = max(freq.get(action_idx, 1), 1)
-        weight = (total / (env.Se_action_num * count)) ** power
+        count = max(freq.get(action_idx, 0), 1)
+        if method == 'power':
+            weight = (total / (env.Se_action_num * count)) ** power if total > 0 else 1.0
+        elif method == 'log':
+            ratio = max(max_count / count, 1.0)
+            weight = min_weight + log_scale * math.log(ratio)
+        else:
+            raise ValueError(f'未知证候要素权重方法: {method}')
         weights[action_idx] = float(min(max(weight, min_weight), max_weight))
     if logger is not None:
         logger.info(
-            f"证候要素奖励权重(min={min_weight}, max={max_weight}, power={power}): "
+            f"证候要素奖励权重(method={method}, min={min_weight}, max={max_weight}, "
+            f"power={power}, log_scale={log_scale}): "
             f"{ {env.action_space[k]: round(v, 4) for k, v in weights.items()} }"
         )
     return weights
+
+
+def compute_Se_supports(training_data, env, logger=None):
+    freq = Counter()
+    for _, Se_names in training_data:
+        for Se_name in Se_names:
+            freq[env.swapped_action_space[Se_name]] += 1
+    supports = {action_idx: int(freq.get(action_idx, 0)) for action_idx in range(env.Se_action_num)}
+    if logger is not None:
+        logger.info(
+            f"证候要素训练support: "
+            f"{ {env.action_space[k]: supports[k] for k in range(env.Se_action_num)} }"
+        )
+    return supports

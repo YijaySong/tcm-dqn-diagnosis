@@ -1,0 +1,2 @@
+﻿experiment,completed_seeds,sample_f1_mean,sample_f1_std,micro_f1_mean,micro_f1_std,macro_f1_mean,macro_f1_std,supported_macro_f1_mean,supported_macro_f1_std,exact_match_mean,exact_match_std,miss_selection_rate_mean,miss_selection_rate_std,zero_f1_count_mean,zero_f1_count_std
+min_actions_0,2,0.7805660694029679,0.00600128481144524,0.7879211983323371,0.005049226013998098,0.5390965223470847,0.001783797707037127,0.5390965223470847,0.001783797707037127,0.24331550802139038,0.005347593582887694,0.19307040998217473,0.00942513368983959,2.5,0.5

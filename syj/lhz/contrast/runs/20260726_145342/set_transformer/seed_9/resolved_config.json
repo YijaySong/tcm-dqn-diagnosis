@@ -1,0 +1,26 @@
+{
+  "model_name": "set_transformer",
+  "display_name": "Set Transformer",
+  "seed": 9,
+  "best_epoch": 86,
+  "best_threshold": 0.06,
+  "loss_name": "class_balanced_bce",
+  "model_config": {
+    "symptom_count": 369,
+    "output_size": 18,
+    "embedding_dim": 128,
+    "n_heads": 4,
+    "n_layers": 2,
+    "feedforward_dim": 256,
+    "dropout": 0.15,
+    "position_encoding": false
+  },
+  "epochs": 100,
+  "batch_size": 64,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.0001,
+  "pos_weight_max": 8.0,
+  "device": "cuda",
+  "amp_enabled": true,
+  "elapsed_seconds": 48.206380099989474
+}

@@ -1,0 +1,14 @@
+{
+  "model_name": "ptm_top3",
+  "display_name": "PTM (Fixed Top-3)",
+  "seed": 17,
+  "topics": 25,
+  "roles": 4,
+  "alpha": 1.0,
+  "beta": 0.1,
+  "eta": 1.0,
+  "iterations": 500,
+  "inference_iterations": 100,
+  "fixed_output_count": 3,
+  "elapsed_seconds": 581.3916331999935
+}

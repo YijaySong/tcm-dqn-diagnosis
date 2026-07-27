@@ -29,10 +29,11 @@ class DQNTrainer(object):
         aux_supervised_weight=0.05, pretrain_all_permutations=1,
         target_update_strategy='soft', target_update_interval=1,
         per_beta_start=0.4, per_beta_frames=5000, priority_clip=10.0,
-        optimize_interval=5, n_step=3, aux_supervised_start=0.5,
-        aux_pos_weight_max=20.0, pretrain_anchor_weight=1e-4,
-        use_curriculum=True, curriculum_stage1=0.3, curriculum_stage2=0.6,
-        min_actions_before_stop=1, stop_margin_threshold=None, rare_priority_scale=0.5,
+        optimize_interval=5, n_step=1, aux_supervised_start=0.05,
+        aux_pos_weight_max=1.0, pretrain_pos_weight_max=10.0, pretrain_anchor_weight=0.0,
+        use_curriculum=False, curriculum_stage1=0.3, curriculum_stage2=0.6,
+        min_actions_before_stop=0, stop_margin_threshold=None, rare_priority_scale=0.0,
+        pretrain_miss_priority_scale=0.0, refresh_hints_interval=10,
     ):
         self.env = env
         self.training_tcm_data = training_tcm_data
@@ -59,6 +60,7 @@ class DQNTrainer(object):
         self.optimize_interval = max(1, optimize_interval)
         self.n_step = max(1, n_step)
         self.aux_pos_weight_max = aux_pos_weight_max
+        self.pretrain_pos_weight_max = pretrain_pos_weight_max
         self.pretrain_anchor_weight = pretrain_anchor_weight
         self.use_curriculum = bool(use_curriculum)
         self.curriculum_stage1 = curriculum_stage1
@@ -66,6 +68,8 @@ class DQNTrainer(object):
         self.min_actions_before_stop = min_actions_before_stop
         self.stop_margin_threshold = stop_margin_threshold
         self.rare_priority_scale = rare_priority_scale
+        self.pretrain_miss_priority_scale = pretrain_miss_priority_scale
+        self.refresh_hints_interval = max(1, refresh_hints_interval)
         self.training_progress = 0.0
         self.optimization_steps = 0
         self.target_update_count = 0
@@ -174,6 +178,64 @@ class DQNTrainer(object):
             for name, parameter in self.policy_net.named_parameters()
             if parameter.requires_grad
         }
+
+    def refresh_pretrain_reward_hints(self):
+        """记录预训练模型对每个症状集合的低置信标签，用于尾部探索奖励。"""
+        hints = defaultdict(dict)
+        true_probs = []
+        true_scores = []
+        true_miss_count = 0
+        true_action_count = 0
+
+        was_training = self.policy_net.training
+        self.policy_net.eval()
+        with torch.no_grad():
+            for symptoms, true_Se_names in self.training_tcm_data:
+                state_np = build_state_vector(self.env, symptoms, [])
+                state = torch.tensor(state_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+                label_logits = self.policy_net(state)[0, :self.env.Se_action_num]
+                probs = torch.sigmoid(label_logits).detach().cpu().numpy()
+                order = np.argsort(-probs)
+                ranks = np.empty_like(order)
+                ranks[order] = np.arange(1, len(order) + 1)
+                key = tuple(sorted(symptoms))
+                true_actions = {self.env.swapped_action_space[name] for name in true_Se_names}
+                miss_rank_cutoff = max(len(true_actions) + 2, 5)
+
+                for action_idx in range(self.env.Se_action_num):
+                    prob = float(probs[action_idx])
+                    uncertainty = max(0.0, 1.0 - abs(prob - 0.5) * 2.0)
+                    miss = 1.0 if int(ranks[action_idx]) > miss_rank_cutoff else 0.0
+                    score = max(0.0, min(1.0, 0.55 * (1.0 - prob) + 0.45 * uncertainty))
+                    old_hint = hints[key].get(action_idx)
+                    if old_hint is None or score > old_hint['score']:
+                        hints[key][action_idx] = {
+                            'prob': prob,
+                            'rank': int(ranks[action_idx]),
+                            'uncertainty': uncertainty,
+                            'miss': miss,
+                            'score': score,
+                        }
+
+                for action_idx in true_actions:
+                    hint = hints[key][action_idx]
+                    true_probs.append(hint['prob'])
+                    true_scores.append(hint['score'])
+                    true_miss_count += int(hint['miss'] > 0)
+                    true_action_count += 1
+
+        self.env.set_pretrain_hints({key: dict(value) for key, value in hints.items()})
+        if was_training:
+            self.policy_net.train()
+            self.target_net.eval()
+        avg_prob = float(np.mean(true_probs)) if true_probs else 0.0
+        avg_score = float(np.mean(true_scores)) if true_scores else 0.0
+        miss_rate = true_miss_count / true_action_count if true_action_count else 0.0
+        self.logger.info(
+            f"预训练探索提示已生成: symptom_keys={len(hints)}, "
+            f"true_avg_prob={avg_prob:.4f}, true_avg_hint_score={avg_score:.4f}, "
+            f"true_miss_rank_rate={miss_rate:.4f}"
+        )
 
     def pretrained_anchor_loss(self):
         if not self.pretrain_anchor or self.pretrain_anchor_weight <= 0:
@@ -287,7 +349,7 @@ class DQNTrainer(object):
 
         pos_count = targets.sum(dim=0)
         neg_count = targets.shape[0] - pos_count
-        pos_weight = (neg_count / torch.clamp(pos_count, min=1.0)).sqrt().clamp(min=1.0, max=self.aux_pos_weight_max)
+        pos_weight = (neg_count / torch.clamp(pos_count, min=1.0)).clamp(min=1.0, max=self.pretrain_pos_weight_max)
         pos_weight[self.env.stop_action] = 1.0
 
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -317,6 +379,7 @@ class DQNTrainer(object):
 
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.capture_pretrain_anchor()
+        self.refresh_pretrain_reward_hints()
 
     def _store_n_step_trajectory(self, trajectory):
         added = 0
@@ -346,7 +409,11 @@ class DQNTrainer(object):
             rare_bonus = 0.0
             if 0 <= action_idx < self.env.Se_action_num:
                 rare_bonus = max(0.0, self.env.Se_weights.get(action_idx, 1.0) - 1.0) * self.rare_priority_scale
-            priority = abs(total_reward) + 1.0 + rare_bonus
+            hint_bonus = 0.0
+            if 0 <= action_idx < self.env.Se_action_num:
+                hint_bonus = self.env._pretrain_hint_score(action_idx) * self.pretrain_miss_priority_scale
+                hint_bonus += self.env._pretrain_miss_flag(action_idx) * self.pretrain_miss_priority_scale
+            priority = abs(total_reward) + 1.0 + rare_bonus + hint_bonus
             self.memory.push(state, action, reward_tensor, next_state, next_invalid_actions, discount_tensor, priority=priority)
             added += 1
         return added
@@ -416,6 +483,7 @@ class DQNTrainer(object):
 
         for i_episode in range(num_episodes):
             self.training_progress = i_episode / max(num_episodes - 1, 1) if num_episodes > 1 else 1.0
+            self.env.set_reward_progress(self.training_progress)
             episode_data, curriculum_stage = self._curriculum_episode_data(i_episode, num_episodes)
             self.logger.info(
                 f"第 {i_episode} 次迭代开始... curriculum={curriculum_stage}, "
@@ -493,9 +561,15 @@ class DQNTrainer(object):
             )
             self.logger.info(f"第 {i_episode} 次迭代的训练时间: {epi_et-epi_st:.6f}秒")
             self.logger.info(f"第 {i_episode} 次迭代完成。")
+            
+            # 周期性更新 pretrain_hints，让好奇心机制适应网络变化
+            if (i_episode + 1) % self.refresh_hints_interval == 0:
+                self.refresh_pretrain_reward_hints()
+                self.logger.info(f"已更新预训练探索提示 (每 {self.refresh_hints_interval} 次迭代更新一次)")
 
         et = time.perf_counter()
         self.training_progress = 1.0
+        self.env.set_reward_progress(1.0)
         self.logger.info(f"训练时间总共: {et-st:.6f}秒")
         self.logger.info("训练完成，测试集评估将在训练结束后单独执行")
 
@@ -515,7 +589,7 @@ class DQNTrainer(object):
             self.target_net.eval()
         return metrics
 
-    def predict_symptoms(self, symptoms_str, max_actions=None, force_top_k=None):
+    def predict_symptoms(self, symptoms_str, max_actions=None):
         state_vector = np.zeros(len(self.env.state_space), dtype=np.float32)
         for symptom in symptoms_str.split(','):
             symptom = symptom.strip()
@@ -524,7 +598,7 @@ class DQNTrainer(object):
 
         selected_actions = predict_actions_from_state(
             self.env, self.policy_net, self.action_selector, self.device,
-            state_vector, force_top_k=force_top_k, max_actions=max_actions,
+            state_vector, max_actions=max_actions,
             stop_margin_threshold=self.stop_margin_threshold,
             min_actions=self.min_actions_before_stop,
         )

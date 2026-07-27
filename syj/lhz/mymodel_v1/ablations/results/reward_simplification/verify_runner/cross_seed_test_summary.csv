@@ -1,0 +1,4 @@
+﻿experiment,completed_seeds,sample_f1_mean,sample_f1_std,micro_f1_mean,micro_f1_std,macro_f1_mean,macro_f1_std,supported_macro_f1_mean,supported_macro_f1_std,exact_match_mean,exact_match_std,miss_selection_rate_mean,miss_selection_rate_std,zero_f1_count_mean,zero_f1_count_std
+minimal_weighted_fbeta,1,0.07991360320957903,0.0,0.08158860349665444,0.0,0.056651001763524035,0.0,0.13151125409389508,0.0,0.0,0.0,0.38804444444444447,0.0,6.0,0.0
+no_label_reweight,1,0.07991360320957903,0.0,0.08158860349665444,0.0,0.056651001763524035,0.0,0.13151125409389508,0.0,0.0,0.0,0.38804444444444447,0.0,6.0,0.0
+no_step_cost,1,0.07991360320957903,0.0,0.08158860349665444,0.0,0.056651001763524035,0.0,0.13151125409389508,0.0,0.0,0.0,0.38804444444444447,0.0,6.0,0.0

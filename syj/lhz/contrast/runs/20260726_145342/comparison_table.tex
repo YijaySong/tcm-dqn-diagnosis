@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\caption{Comparison of the proposed method with baseline methods on the test set. Higher values indicate better performance, except for Miss Rate and Zero-F1 Labels.}
+\label{tab:main_comparison}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\hline
+Method & Sample F1 & Micro-F1 & Supported Macro-F1 & Exact Match & Sample Precision & Sample Recall & Miss Rate & Zero-F1 Labels \\
+\hline
+Label Frequency & 0.4765 $\pm$ 0.0000 & 0.4842 $\pm$ 0.0000 & 0.2436 $\pm$ 0.0000 & 0.0000 $\pm$ 0.0000 & 0.3225 $\pm$ 0.0000 & 0.9733 $\pm$ 0.0000 & 0.0267 $\pm$ 0.0000 & 8.00 $\pm$ 0.00 \\
+BR + Linear SVM & 0.7824 $\pm$ 0.0000 & 0.7842 $\pm$ 0.0000 & 0.4680 $\pm$ 0.0000 & 0.2513 $\pm$ 0.0000 & 0.7810 $\pm$ 0.0000 & 0.8320 $\pm$ 0.0000 & 0.1680 $\pm$ 0.0000 & 4.00 $\pm$ 0.00 \\
+ML-kNN & 0.6977 $\pm$ 0.0000 & 0.7025 $\pm$ 0.0000 & 0.3767 $\pm$ 0.0000 & 0.0561 $\pm$ 0.0000 & 0.6062 $\pm$ 0.0000 & 0.8716 $\pm$ 0.0000 & 0.1284 $\pm$ 0.0000 & 5.00 $\pm$ 0.00 \\
+MLP + BCE & 0.7786 $\pm$ 0.0176 & 0.7807 $\pm$ 0.0210 & 0.4318 $\pm$ 0.0187 & 0.1952 $\pm$ 0.0381 & 0.7402 $\pm$ 0.0531 & 0.8757 $\pm$ 0.0327 & 0.1243 $\pm$ 0.0327 & 5.00 $\pm$ 0.82 \\
+MLP + CB-BCE & 0.7881 $\pm$ 0.0103 & 0.7901 $\pm$ 0.0114 & 0.4418 $\pm$ 0.0528 & 0.2121 $\pm$ 0.0318 & 0.7547 $\pm$ 0.0306 & 0.8735 $\pm$ 0.0226 & 0.1265 $\pm$ 0.0226 & 5.00 $\pm$ 2.16 \\
+Set Transformer & 0.7809 $\pm$ 0.0072 & 0.7834 $\pm$ 0.0081 & 0.4763 $\pm$ 0.0217 & 0.2228 $\pm$ 0.0167 & 0.7756 $\pm$ 0.0371 & 0.8355 $\pm$ 0.0307 & 0.1645 $\pm$ 0.0307 & 3.00 $\pm$ 0.00 \\
+StaCv2 + LR & 0.7529 $\pm$ 0.0059 & 0.7554 $\pm$ 0.0059 & 0.4014 $\pm$ 0.0133 & 0.1328 $\pm$ 0.0176 & 0.6605 $\pm$ 0.0115 & 0.9283 $\pm$ 0.0047 & 0.0717 $\pm$ 0.0047 & 5.33 $\pm$ 0.94 \\
+PTM (Top-3) & 0.6123 $\pm$ 0.0025 & 0.6207 $\pm$ 0.0021 & 0.1807 $\pm$ 0.0007 & 0.0526 $\pm$ 0.0050 & 0.6536 $\pm$ 0.0022 & 0.6005 $\pm$ 0.0032 & 0.3995 $\pm$ 0.0032 & 12.33 $\pm$ 0.47 \\
+\hline
+\end{tabular}%
+}
+\end{table*}

@@ -1,0 +1,23 @@
+{
+  "model_name": "mlp_bce",
+  "display_name": "MLP + BCE",
+  "seed": 9,
+  "best_epoch": 85,
+  "best_threshold": 0.12,
+  "loss_name": "bce",
+  "model_config": {
+    "input_size": 369,
+    "output_size": 18,
+    "hidden_size": 256,
+    "hidden_size2": 128,
+    "dropout": 0.15
+  },
+  "epochs": 100,
+  "batch_size": 64,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.0001,
+  "pos_weight_max": 8.0,
+  "device": "cuda",
+  "amp_enabled": true,
+  "elapsed_seconds": 21.819028500001878
+}

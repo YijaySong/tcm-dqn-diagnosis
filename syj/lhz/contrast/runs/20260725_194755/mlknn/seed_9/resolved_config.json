@@ -1,0 +1,20 @@
+{
+  "model_name": "mlknn",
+  "display_name": "ML-kNN",
+  "seed": 9,
+  "best_k": 5,
+  "effective_k": 5,
+  "best_smoothing": 1.0,
+  "best_threshold": 0.14,
+  "metric": "cosine",
+  "k_values": [
+    5,
+    10,
+    15,
+    20
+  ],
+  "smoothing_values": [
+    1.0
+  ],
+  "elapsed_seconds": 0.6689725000178441
+}

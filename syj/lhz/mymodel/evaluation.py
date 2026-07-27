@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """模型评估文件。
 
-负责在测试集上调用训练好的DQN策略进行自主停止预测和固定Top-2预测，
+负责在测试集上调用训练好的DQN策略进行自主停止预测，
 并计算样本级、标签级、多标签整体Precision/Recall/F1等评估指标。
 
 最重要的评估指标优先看这几个：
@@ -97,6 +97,8 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
     cardinality_error = []
     over_select_count = []
     under_select_count = []
+    false_selection_rate = []
+    miss_selection_rate = []
     hit_match = []
     empty_prediction = []
 
@@ -115,7 +117,11 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         cardinality_error.append(abs(len(pred_names) - len(true_names)))
         over_select_count.append(max(0, len(pred_names) - len(true_names)))
         under_select_count.append(max(0, len(true_names) - len(pred_names)))
-        hit_match.append(1 if set(pred_names) & set(true_names) else 0)
+        pred_set = set(pred_names)
+        true_set = set(true_names)
+        false_selection_rate.append(len(pred_set - true_set) / len(pred_set) if pred_set else 0.0)
+        miss_selection_rate.append(len(true_set - pred_set) / len(true_set) if true_set else 0.0)
+        hit_match.append(1 if pred_set & true_set else 0)
         empty_prediction.append(1 if len(pred_names) == 0 else 0)
 
     label_tp = (y_true * y_pred).sum(axis=0)
@@ -146,12 +152,19 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         macro_f = float(np.mean(label_f))
         hamming = float(np.not_equal(y_true, y_pred).mean())
 
+    supported_mask = label_support > 0
+    supported_macro_p = float(np.mean(label_p[supported_mask])) if supported_mask.any() else 0.0
+    supported_macro_r = float(np.mean(label_r[supported_mask])) if supported_mask.any() else 0.0
+    supported_macro_f = float(np.mean(label_f[supported_mask])) if supported_mask.any() else 0.0
+
     exact_match_avg = float(np.mean(exact_match))
     label_accuracy_micro = float((label_tp.sum() + label_tn.sum()) / y_true.size) if y_true.size else 0.0
     hit_rate = float(np.mean(hit_match))
     empty_prediction_rate = float(np.mean(empty_prediction))
     avg_over_select = float(np.mean(over_select_count))
     avg_under_select = float(np.mean(under_select_count))
+    avg_false_selection_rate = float(np.mean(false_selection_rate))
+    avg_miss_selection_rate = float(np.mean(miss_selection_rate))
 
     stop_depths = []
     stop_margins = []
@@ -177,8 +190,10 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
     logger.info(f"**ExactMatch/严格准确率(exact_match):{exact_match_avg:.4f}, 标签级Accuracy(label_accuracy):{label_accuracy_micro:.4f}, HammingLoss(hamming_loss):{hamming:.4f}")
     logger.info(f"**Micro P/R/F1:{micro_p:.4f}/{micro_r:.4f}/{micro_f:.4f}")
     logger.info(f"**Macro P/R/F1:{macro_p:.4f}/{macro_r:.4f}/{macro_f:.4f}")
+    logger.info(f"**Supported Macro P/R/F1:{supported_macro_p:.4f}/{supported_macro_r:.4f}/{supported_macro_f:.4f}, supported_labels:{int(supported_mask.sum())}/{env.Se_action_num}")
     logger.info(f"**HitRate(hit_rate):{hit_rate:.4f}, EmptyPredictionRate(empty_prediction_rate):{empty_prediction_rate:.4f}")
     logger.info(f"**平均推荐数:{np.mean(selected_count):.4f}, 平均真实数:{np.mean(true_count):.4f}, 平均数量误差:{np.mean(cardinality_error):.4f}, 平均多选数:{avg_over_select:.4f}, 平均漏选数:{avg_under_select:.4f}")
+    logger.info(f"**勿选率(false_selection_rate):{avg_false_selection_rate:.4f}, 漏选率(miss_selection_rate):{avg_miss_selection_rate:.4f}")
     if trace_sets is not None:
         logger.info(f"**停止诊断 avg_stop_depth:{avg_stop_depth:.4f}, avg_stop_margin:{avg_stop_margin:.4f}, premature_stop_rate:{premature_stop_rate:.4f}, late_stop_rate:{late_stop_rate:.4f}")
     for action_idx in range(env.Se_action_num):
@@ -205,6 +220,9 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         'macro_precision': float(macro_p),
         'macro_recall': float(macro_r),
         'macro_f1': float(macro_f),
+        'supported_macro_precision': supported_macro_p,
+        'supported_macro_recall': supported_macro_r,
+        'supported_macro_f1': supported_macro_f,
         'hit_rate': hit_rate,
         'empty_prediction_rate': empty_prediction_rate,
         'avg_selected_count': float(np.mean(selected_count)),
@@ -212,6 +230,8 @@ def evaluate_prediction_set(env, pred_action_sets, true_name_sets, title, logger
         'avg_cardinality_error': float(np.mean(cardinality_error)),
         'avg_over_select': avg_over_select,
         'avg_under_select': avg_under_select,
+        'false_selection_rate': avg_false_selection_rate,
+        'miss_selection_rate': avg_miss_selection_rate,
         'avg_stop_depth': avg_stop_depth,
         'avg_stop_margin': avg_stop_margin,
         'premature_stop_rate': premature_stop_rate,
@@ -228,37 +248,24 @@ def evaluate(
     if len(eval_data) == 0:
         logger.info(f"{dataset_name}数据为空，跳过评估")
         empty_metrics = {'sample_f1': 0.0, 'exact_match': 0.0, 'micro_f1': 0.0, 'macro_f1': 0.0}
-        return {'auto': empty_metrics, 'top2': empty_metrics}
+        return {'auto': empty_metrics}
 
     auto_pred_actions = []
     auto_traces = []
-    top2_pred_actions = []
-    top2_traces = []
     true_name_sets = []
 
     for data_piece in eval_data:
         state_np = env.reset(data_piece).copy()
         auto_actions, auto_trace = predict_actions_from_state(
-            env, policy_net, action_selector, device, state_np, force_top_k=None,
+            env, policy_net, action_selector, device, state_np,
             stop_margin_threshold=stop_margin_threshold, min_actions=min_actions,
             return_trace=True,
         )
         auto_pred_actions.append(auto_actions)
         auto_traces.append(auto_trace)
 
-        state_np = env.reset(data_piece).copy()
-        top2_actions, top2_trace = predict_actions_from_state(
-            env, policy_net, action_selector, device, state_np,
-            force_top_k=min(2, env.Se_action_num), max_actions=2,
-            return_trace=True,
-        )
-        top2_pred_actions.append(top2_actions)
-        top2_traces.append(top2_trace)
-
         true_name_sets.append(data_piece[1])
 
     auto_metrics = evaluate_prediction_set(env, auto_pred_actions, true_name_sets, f"{dataset_name}-模型自主停止", logger, trace_sets=auto_traces)
-    top2_metrics = evaluate_prediction_set(env, top2_pred_actions, true_name_sets, f"{dataset_name}-固定Top-2诊断", logger, trace_sets=top2_traces)
-    logger.info(f"**{dataset_name} 自主停止 vs Top-2 样本F1: {auto_metrics['sample_f1']:.4f} / {top2_metrics['sample_f1']:.4f}")
     logger.info("========== {0}评估结束 ==========".format(dataset_name))
-    return {'auto': auto_metrics, 'top2': top2_metrics}
+    return {'auto': auto_metrics}

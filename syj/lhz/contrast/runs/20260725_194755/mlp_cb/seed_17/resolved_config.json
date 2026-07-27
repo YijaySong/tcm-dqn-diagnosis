@@ -1,0 +1,23 @@
+{
+  "model_name": "mlp_cb",
+  "display_name": "MLP + CB-BCE",
+  "seed": 17,
+  "best_epoch": 23,
+  "best_threshold": 0.3,
+  "loss_name": "class_balanced_bce",
+  "model_config": {
+    "input_size": 369,
+    "output_size": 18,
+    "hidden_size": 256,
+    "hidden_size2": 128,
+    "dropout": 0.15
+  },
+  "epochs": 100,
+  "batch_size": 64,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.0001,
+  "pos_weight_max": 8.0,
+  "device": "cuda",
+  "amp_enabled": true,
+  "elapsed_seconds": 23.545169299992267
+}

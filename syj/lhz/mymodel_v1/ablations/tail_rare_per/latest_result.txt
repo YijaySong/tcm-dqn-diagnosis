@@ -1,0 +1,8 @@
+长尾 Replay 策略消融
+结果目录：/Users/yy/Desktop/博士期间/自己的/论文二_强化学习辨证/代码/8.13RL/syj/lhz/mymodel_v1/ablations/results/tail_rare_per/20260720_094515
+冻结主配置版本：2026-07-17-v7-cleaned-data
+方案选择依据：验证集跨 seed 指标；测试集不参与方案选择。
+总体 Supported Macro-F1 最优：标准 PER + 稀有加权（0.5446）
+稀有标签 Macro-F1（support 1-4） 最优：标准 PER（无稀有加权）（0.0000）
+最终人工综合选择：标准 PER，`rare_per_scale=0`。
+注意：误差线明显重叠时，不应仅凭均值判断组件重要性。

@@ -21,7 +21,7 @@ from pathlib import Path
 
 ABLATIONS_DIR = Path(__file__).resolve().parent
 LHZ_DIR = ABLATIONS_DIR.parent
-MYMODEL_DIR = LHZ_DIR / 'mymodel'
+MYMODEL_DIR = LHZ_DIR / 'mymodel_reward_v2'
 MAIN_SCRIPT = MYMODEL_DIR / 'main.py'
 RESULTS_DIR = ABLATIONS_DIR / 'results'
 MODEL_PATH = MYMODEL_DIR / 'dqn_model.pth'
@@ -189,7 +189,7 @@ def wrapper_cli(experiment_name):
     parser.add_argument('--dry-run', action='store_true', help='只显示将要执行的命令，不启动训练')
     parser.add_argument(
         'main_args', nargs=argparse.REMAINDER,
-        help='追加传给syj/lhz/mymodel/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
+        help='追加传给syj/lhz/mymodel_reward_v2/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
     )
     args = parser.parse_args()
     extra_main_args = args.main_args

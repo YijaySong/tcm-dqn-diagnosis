@@ -53,7 +53,6 @@ LABEL_COLUMNS = [
 
 MODE_TITLES = {
     'auto': '测试集-模型自主停止',
-    'top2': '测试集-固定Top-2诊断',
 }
 
 
@@ -74,7 +73,6 @@ def parse_metrics_from_log(log_path):
     """Parse aggregate and label-level metrics emitted by syj/lhz/mymodel/evaluation.py."""
     result = {
         'auto': {'metrics': {}, 'labels': {}},
-        'top2': {'metrics': {}, 'labels': {}},
     }
     current_mode = None
 
@@ -100,9 +98,6 @@ def parse_metrics_from_log(log_path):
         line = raw_line.strip()
         if MODE_TITLES['auto'] in line:
             current_mode = 'auto'
-            continue
-        if MODE_TITLES['top2'] in line:
-            current_mode = 'top2'
             continue
         if current_mode is None:
             continue
@@ -183,24 +178,24 @@ def build_rows(results):
         experiment = item['experiment']
         label = item['label']
         parsed = item.get('metrics') or {}
-        for mode in ['auto', 'top2']:
-            mode_data = parsed.get(mode, {})
-            metrics = mode_data.get('metrics', {})
-            row = {'experiment': experiment, 'label': label, 'mode': mode}
-            for column in AGGREGATE_COLUMNS:
-                if column not in row:
-                    row[column] = metrics.get(column, '')
-            aggregate_rows.append(row)
+        mode = 'auto'
+        mode_data = parsed.get(mode, {})
+        metrics = mode_data.get('metrics', {})
+        row = {'experiment': experiment, 'label': label, 'mode': mode}
+        for column in AGGREGATE_COLUMNS:
+            if column not in row:
+                row[column] = metrics.get(column, '')
+        aggregate_rows.append(row)
 
-            for syndrome_element, label_metrics in sorted(mode_data.get('labels', {}).items()):
-                label_row = {
-                    'experiment': experiment,
-                    'label': label,
-                    'mode': mode,
-                    'syndrome_element': syndrome_element,
-                }
-                label_row.update(label_metrics)
-                label_rows.append(label_row)
+        for syndrome_element, label_metrics in sorted(mode_data.get('labels', {}).items()):
+            label_row = {
+                'experiment': experiment,
+                'label': label,
+                'mode': mode,
+                'syndrome_element': syndrome_element,
+            }
+            label_row.update(label_metrics)
+            label_rows.append(label_row)
     return aggregate_rows, label_rows
 
 
@@ -246,7 +241,7 @@ def parse_args():
     parser.add_argument('--hide-labels', action='store_true', help='终端不展示逐标签指标；仍会保存到CSV/JSON')
     parser.add_argument(
         'main_args', nargs=argparse.REMAINDER,
-        help='追加传给所有实验中syj/lhz/mymodel/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
+        help='追加传给所有实验中syj/lhz/mymodel_reward_v2/main.py的参数；如需使用，请放在 -- 后面，例如: -- -episode 5'
     )
     args = parser.parse_args()
     if args.main_args and args.main_args[0] == '--':

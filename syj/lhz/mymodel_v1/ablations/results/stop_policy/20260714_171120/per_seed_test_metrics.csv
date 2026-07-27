@@ -1,0 +1,10 @@
+﻿experiment,seed,status,sample_f1,micro_f1,macro_f1,supported_macro_f1,exact_match,miss_selection_rate,zero_f1_count
+min_actions_0,9,failed,,,,,,,
+min_actions_0,17,failed,,,,,,,
+min_actions_0,29,failed,,,,,,,
+min_actions_1,9,failed,,,,,,,
+min_actions_1,17,failed,,,,,,,
+min_actions_1,29,failed,,,,,,,
+min_actions_2,9,failed,,,,,,,
+min_actions_2,17,failed,,,,,,,
+min_actions_2,29,failed,,,,,,,

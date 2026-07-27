@@ -1,0 +1,7 @@
+﻿experiment,seed,status,sample_f1,micro_f1,macro_f1,supported_macro_f1,exact_match,miss_selection_rate,zero_f1_count
+no_rare_per,9,failed,,,,,,,
+no_rare_per,17,failed,,,,,,,
+no_rare_per,29,failed,,,,,,,
+rare_per,9,failed,,,,,,,
+rare_per,17,failed,,,,,,,
+rare_per,29,failed,,,,,,,

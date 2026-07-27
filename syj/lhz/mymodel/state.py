@@ -40,7 +40,7 @@ def Se_names_to_multihot(env, Se_names):
 
 
 def predict_actions_from_state(
-    env, policy_net, action_selector, device, state_np, force_top_k=None, max_actions=None,
+    env, policy_net, action_selector, device, state_np, max_actions=None,
     stop_margin_threshold=None, min_actions=0, return_trace=False
 ):
     policy_net.eval()
@@ -52,7 +52,7 @@ def predict_actions_from_state(
     with torch.no_grad():
         while len(selected_actions) < max_actions:
             state_tensor = torch.tensor(state_np, dtype=torch.float32, device=device).unsqueeze(0)
-            mask_stop = (force_top_k is not None and len(selected_actions) < force_top_k) or len(selected_actions) < min_actions
+            mask_stop = len(selected_actions) < min_actions
             q_values = policy_net(state_tensor)
             masked_q = mask_selected_actions(q_values, [selected_actions], env, mask_stop=mask_stop)
             label_q = masked_q[:, :env.Se_action_num]
@@ -61,8 +61,7 @@ def predict_actions_from_state(
             stop_margin = stop_q - best_label_q
 
             if (
-                force_top_k is None
-                and stop_margin_threshold is not None
+                stop_margin_threshold is not None
                 and len(selected_actions) >= min_actions
                 and stop_margin.item() >= stop_margin_threshold
             ):
@@ -92,9 +91,6 @@ def predict_actions_from_state(
 
             selected_actions.append(action_idx)
             state_np[env.symp_len + action_idx] = 1
-
-            if force_top_k is not None and len(selected_actions) >= force_top_k:
-                break
 
     if return_trace:
         return selected_actions, trace

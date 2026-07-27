@@ -11,7 +11,9 @@
 
 import argparse
 import csv
+import glob
 import os
+import re
 from pathlib import Path
 
 try:
@@ -25,7 +27,10 @@ except ImportError as exc:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+LHZ_DIR = SCRIPT_DIR.parent
 RESULTS_DIR = SCRIPT_DIR / 'results'
+IMPROVED_EXPERIMENT = 'reward_v2'
+IMPROVED_LABEL = 'Reward V2'
 
 matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -43,6 +48,7 @@ AUX_METRICS = [
     ('sample_jaccard', 'Sample Jaccard', '集合重合度，越高越好'),
     ('label_accuracy', 'Label Accuracy', '标签位准确率，标签稀疏时仅辅助参考'),
     ('hamming_loss', 'Hamming Loss', '标签位错误率，越低越好'),
+    ('supported_macro_f1', 'Supported Macro F1', '仅对测试集中出现过的标签求Macro F1'),
     ('hit_rate', 'Hit Rate', '至少命中一个真实证候要素的比例，越高越好'),
     ('empty_prediction_rate', 'Empty Prediction Rate', '空预测比例，通常越低越好'),
     ('avg_selected_count', 'Avg Selected Count', '平均推荐证候要素数量'),
@@ -61,8 +67,8 @@ LABEL_METRICS = [
     ('pred_count', 'Pred Count'),
 ]
 
-EXPERIMENT_ORDER = ['full', 'no_pretrain', 'pretrain_only', 'no_expert_warmup', 'rl_only']
-MODE_ORDER = ['auto', 'top2']
+EXPERIMENT_ORDER = ['full', 'no_pretrain', 'pretrain_only', 'no_expert_warmup', 'rl_only', IMPROVED_EXPERIMENT]
+MODE_ORDER = ['auto']
 
 
 def read_csv(path):
@@ -103,6 +109,169 @@ def load_result_dir(result_dir):
     if not label_path.exists():
         raise FileNotFoundError(f'未找到逐标签指标文件: {label_path}')
     return read_csv(aggregate_path), read_csv(label_path)
+
+
+def is_improved_model_log(log_path):
+    try:
+        text = Path(log_path).read_text(encoding='utf-8')[:12000]
+    except OSError:
+        return False
+    return 'tail_cost_curiosity' in text or "'mode': 'tail_cost_curiosity'" in text
+
+
+def find_latest_improved_log():
+    project_root = LHZ_DIR.parent.parent
+    patterns = [
+        str(LHZ_DIR / 'mymodel_reward_v2' / 'dqn_*.log'),
+        str(Path.cwd() / 'dqn_*.log'),
+        str(project_root / 'dqn_*.log'),
+        str(LHZ_DIR / 'dqn_*.log'),
+        str(RESULTS_DIR / '**' / 'dqn_*.log'),
+    ]
+    matches = []
+    for pattern in patterns:
+        matches.extend(Path(path) for path in glob.glob(pattern, recursive='**' in pattern) if Path(path).exists())
+    matches = [path for path in set(matches) if is_improved_model_log(path)]
+    return max(matches, key=lambda path: path.stat().st_mtime) if matches else None
+
+
+def parse_improved_log(log_path):
+    parsed = {'auto': {'metrics': {}, 'labels': {}}}
+    current_mode = None
+    core_pattern = re.compile(
+        r'sample_f1:([0-9.]+), sample_recall:([0-9.]+), '
+        r'sample_precision:([0-9.]+), exact_match:([0-9.]+), macro_f1:([0-9.]+)'
+    )
+    jaccard_pattern = re.compile(r'sample_jaccard\) avg:([0-9.]+) max:([0-9.]+) min:([0-9.]+)')
+    exact_pattern = re.compile(r'exact_match\):([0-9.]+), 标签级Accuracy\(label_accuracy\):([0-9.]+), HammingLoss\(hamming_loss\):([0-9.]+)')
+    micro_pattern = re.compile(r'Micro P/R/F1:([0-9.]+)/([0-9.]+)/([0-9.]+)')
+    macro_pattern = re.compile(r'Macro P/R/F1:([0-9.]+)/([0-9.]+)/([0-9.]+)')
+    supported_macro_pattern = re.compile(r'Supported Macro P/R/F1:([0-9.]+)/([0-9.]+)/([0-9.]+)')
+    hit_pattern = re.compile(r'HitRate\(hit_rate\):([0-9.]+), EmptyPredictionRate\(empty_prediction_rate\):([0-9.]+)')
+    count_pattern = re.compile(
+        r'平均推荐数:([0-9.]+), 平均真实数:([0-9.]+), 平均数量误差:([0-9.]+), '
+        r'平均多选数:([0-9.]+), 平均漏选数:([0-9.]+)'
+    )
+    label_pattern = re.compile(
+        r'\*\*标签\[(.+?)\] P/R/F1/Acc/Support/PredCount:'
+        r'([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+)/(\d+)/(\d+)'
+    )
+    final_auto_pattern = re.compile(
+        r'测试集-自主停止: sample_f1=([0-9.]+), exact_match=([0-9.]+), '
+        r'micro_f1=([0-9.]+), macro_f1=([0-9.]+)(?:, supported_macro_f1=([0-9.]+))?'
+    )
+
+    for raw_line in Path(log_path).read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if '测试集-模型自主停止' in line or '模型自主停止' in line:
+            current_mode = 'auto'
+            continue
+
+        match = final_auto_pattern.search(line)
+        if match:
+            metrics = parsed['auto']['metrics']
+            metrics['sample_f1'] = float(match.group(1))
+            metrics['exact_match'] = float(match.group(2))
+            metrics['micro_f1'] = float(match.group(3))
+            metrics['macro_f1'] = float(match.group(4))
+            if match.group(5) is not None:
+                metrics['supported_macro_f1'] = float(match.group(5))
+            continue
+
+        if current_mode is None:
+            continue
+        metrics = parsed[current_mode]['metrics']
+        labels = parsed[current_mode]['labels']
+
+        match = core_pattern.search(line)
+        if match:
+            metrics['sample_f1'] = float(match.group(1))
+            metrics['sample_recall'] = float(match.group(2))
+            metrics['sample_precision'] = float(match.group(3))
+            metrics['exact_match'] = float(match.group(4))
+            metrics['macro_f1'] = float(match.group(5))
+            continue
+        match = jaccard_pattern.search(line)
+        if match:
+            metrics['sample_jaccard'] = float(match.group(1))
+            metrics['sample_jaccard_max'] = float(match.group(2))
+            metrics['sample_jaccard_min'] = float(match.group(3))
+            continue
+        match = exact_pattern.search(line)
+        if match:
+            metrics['exact_match'] = float(match.group(1))
+            metrics['label_accuracy'] = float(match.group(2))
+            metrics['hamming_loss'] = float(match.group(3))
+            continue
+        match = micro_pattern.search(line)
+        if match:
+            metrics['micro_precision'] = float(match.group(1))
+            metrics['micro_recall'] = float(match.group(2))
+            metrics['micro_f1'] = float(match.group(3))
+            continue
+        match = macro_pattern.search(line)
+        if match:
+            metrics['macro_precision'] = float(match.group(1))
+            metrics['macro_recall'] = float(match.group(2))
+            metrics['macro_f1'] = float(match.group(3))
+            continue
+        match = supported_macro_pattern.search(line)
+        if match:
+            metrics['supported_macro_precision'] = float(match.group(1))
+            metrics['supported_macro_recall'] = float(match.group(2))
+            metrics['supported_macro_f1'] = float(match.group(3))
+            continue
+        match = hit_pattern.search(line)
+        if match:
+            metrics['hit_rate'] = float(match.group(1))
+            metrics['empty_prediction_rate'] = float(match.group(2))
+            continue
+        match = count_pattern.search(line)
+        if match:
+            metrics['avg_selected_count'] = float(match.group(1))
+            metrics['avg_true_count'] = float(match.group(2))
+            metrics['avg_cardinality_error'] = float(match.group(3))
+            metrics['avg_over_select'] = float(match.group(4))
+            metrics['avg_under_select'] = float(match.group(5))
+            continue
+        match = label_pattern.search(line)
+        if match:
+            labels[match.group(1)] = {
+                'precision': float(match.group(2)),
+                'recall': float(match.group(3)),
+                'f1': float(match.group(4)),
+                'accuracy': float(match.group(5)),
+                'support': int(match.group(6)),
+                'pred_count': int(match.group(7)),
+            }
+    return parsed
+
+
+def append_improved_model_rows(aggregate_rows, label_rows, log_path=None):
+    log_path = Path(log_path) if log_path else find_latest_improved_log()
+    if log_path is None:
+        print('未找到Reward V2日志，消融图中不会加入该模型。')
+        return aggregate_rows, label_rows
+
+    parsed = parse_improved_log(log_path)
+    aggregate_rows = [row for row in aggregate_rows if row.get('experiment') != IMPROVED_EXPERIMENT]
+    label_rows = [row for row in label_rows if row.get('experiment') != IMPROVED_EXPERIMENT]
+    for mode in MODE_ORDER:
+        metrics = parsed.get(mode, {}).get('metrics', {})
+        row = {'experiment': IMPROVED_EXPERIMENT, 'label': IMPROVED_LABEL, 'mode': mode}
+        row.update(metrics)
+        aggregate_rows.append(row)
+        for syndrome_element, metrics_row in sorted(parsed.get(mode, {}).get('labels', {}).items()):
+            label_row = {
+                'experiment': IMPROVED_EXPERIMENT,
+                'label': IMPROVED_LABEL,
+                'mode': mode,
+                'syndrome_element': syndrome_element,
+            }
+            label_row.update(metrics_row)
+            label_rows.append(label_row)
+    print(f'已加入Reward V2指标: {log_path}')
+    return aggregate_rows, label_rows
 
 
 def sort_aggregate_rows(rows):
@@ -170,7 +339,8 @@ def plot_core_metrics(aggregate_rows, mode, title_suffix):
     for idx, (key, label) in enumerate(zip(metric_keys, metric_labels)):
         ax = axes[idx]
         values = [to_float(row.get(key)) for row in rows]
-        bars = ax.bar(labels, values, color='#4C78A8')
+        colors = ['#D62728' if row.get('experiment') == IMPROVED_EXPERIMENT else '#4C78A8' for row in rows]
+        bars = ax.bar(labels, values, color=colors)
         ax.set_title(label)
         ax.set_ylim(0, 1)
         ax.grid(True, axis='y', alpha=0.3)
@@ -251,31 +421,28 @@ def make_figures(aggregate_rows, label_rows, top_n_labels):
         return figures
 
     figures.append(plot_core_metrics(aggregate_rows, 'auto', 'Auto Stop'))
-    figures.append(plot_core_metrics(aggregate_rows, 'top2', 'Top-2'))
     figures.append(plot_core_heatmap(aggregate_rows))
 
-    for mode, title in [('auto', 'Auto Stop'), ('top2', 'Top-2')]:
-        aux_rows = build_aux_table_rows(aggregate_rows, mode)
-        figures.append(add_table_page(
-            f'Auxiliary Metrics Table - {title}',
-            ['Experiment', 'Metric', 'Value', 'Note'],
-            aux_rows,
-            figsize=(16, 10),
-            font_size=7,
-            scale_y=1.1,
-        ))
+    aux_rows = build_aux_table_rows(aggregate_rows, 'auto')
+    figures.append(add_table_page(
+        'Auxiliary Metrics Table - Auto Stop',
+        ['Experiment', 'Metric', 'Value', 'Note'],
+        aux_rows,
+        figsize=(16, 10),
+        font_size=7,
+        scale_y=1.1,
+    ))
 
     if label_rows:
-        for mode, title in [('auto', 'Auto Stop'), ('top2', 'Top-2')]:
-            table_rows = build_label_table_rows(label_rows, mode, top_n_labels)
-            figures.append(add_table_page(
-                f'Top-{top_n_labels} Label Metrics by Support - {title}',
-                ['Experiment', 'Syndrome Element', 'Precision', 'Recall', 'F1', 'Accuracy', 'Support', 'Pred Count'],
-                table_rows,
-                figsize=(18, 11),
-                font_size=6,
-                scale_y=0.95,
-            ))
+        table_rows = build_label_table_rows(label_rows, 'auto', top_n_labels)
+        figures.append(add_table_page(
+            f'Top-{top_n_labels} Label Metrics by Support - Auto Stop',
+            ['Experiment', 'Syndrome Element', 'Precision', 'Recall', 'F1', 'Accuracy', 'Support', 'Pred Count'],
+            table_rows,
+            figsize=(18, 11),
+            font_size=6,
+            scale_y=0.95,
+        ))
     return figures
 
 
@@ -325,6 +492,8 @@ def parse_args():
     parser.add_argument('--output', default=None, help='输出PDF路径；默认保存到结果批次目录/ablation_metrics.pdf')
     parser.add_argument('--also-png', action='store_true', help='除PDF外，同时把每页保存为PNG')
     parser.add_argument('--top-n-labels', type=int, default=15, help='逐标签表格中每个实验展示support最高的前N个标签')
+    parser.add_argument('--reward-v2-log', default=None, help='Reward V2模型日志；默认自动查找最新tail_cost_curiosity日志')
+    parser.add_argument('--no-reward-v2', action='store_true', help='不把Reward V2模型加入消融对比图')
     parser.add_argument('--no-summary', action='store_true', help='不在终端打印核心指标摘要')
     return parser.parse_args()
 
@@ -333,6 +502,10 @@ def main():
     args = parse_args()
     result_dir = Path(args.result_dir) if args.result_dir else latest_result_dir()
     aggregate_rows, label_rows = load_result_dir(result_dir)
+    if not args.no_reward_v2:
+        aggregate_rows, label_rows = append_improved_model_rows(
+            aggregate_rows, label_rows, log_path=args.reward_v2_log
+        )
     output_path = Path(args.output) if args.output else result_dir / 'ablation_metrics.pdf'
 
     figures = make_figures(aggregate_rows, label_rows, args.top_n_labels)

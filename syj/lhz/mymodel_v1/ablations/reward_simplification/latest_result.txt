@@ -1,0 +1,8 @@
+奖励函数组成消融
+结果目录：D:\DaiMa\syj\lhz\mymodel_v1\ablations\results\reward_simplification\20260718_215858
+冻结主配置版本：2026-07-17-v7-cleaned-data
+方案选择依据：验证集跨 seed 指标；测试集不参与方案选择。
+Supported Macro-F1 最优：最终奖励（无步成本）（0.5454）
+样本 F1 最优：去掉类别权重（0.7863）
+最终人工综合选择：加权 F1，无步成本。
+注意：误差线明显重叠时，不应仅凭均值判断组件重要性。

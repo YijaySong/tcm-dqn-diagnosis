@@ -2,7 +2,7 @@
 """过程版辨证预测入口。
 
 运行本文件后，直接输入一组刻下症，程序会依次输出模型每一步选择的证候要素，
-并默认显示每一步Q值最高的前3个候选动作。
+并默认显示每一步Q值排名靠前的3个候选动作。
 """
 
 import argparse
@@ -39,7 +39,7 @@ def run_prediction(model, env, symptoms_text, candidate_topk):
 def build_parser():
     parser = argparse.ArgumentParser(description='过程版LHZ辨证预测入口')
     parser.add_argument('symptoms', nargs='*', help='症状文本；多个症状可用逗号分隔，也可用空格分隔')
-    parser.add_argument('--candidate-topk', type=int, default=CANDIDATE_TOPK, help='每步显示Q值最高的候选动作数量')
+    parser.add_argument('--candidate-topk', type=int, default=CANDIDATE_TOPK, help='每步显示Q值排名靠前的候选动作数量')
     parser.add_argument('--example', action='store_true', help='使用内置示例症状运行一次')
     return parser
 
@@ -48,7 +48,7 @@ def main():
     args = build_parser().parse_args()
     model, env, metadata = load_recommender()
     print(f"加载模型: {metadata['model_path']}")
-    print(f"本入口会逐步输出辨证过程，并显示每步Top-{args.candidate_topk}候选动作。")
+    print(f"本入口会逐步输出辨证过程，并显示每步候选动作排名前{args.candidate_topk}项。")
 
     if args.example:
         run_prediction(model, env, DEFAULT_SYMPTOMS, args.candidate_topk)

@@ -12,7 +12,7 @@ from datetime import datetime
 import torch.optim as optim
 
 from constants import device
-from data import compute_Se_weights, export_split_data, get_tcm_data, stratified_split_data, strip_sample_id
+from data import compute_Se_supports, compute_Se_weights, export_split_data, get_tcm_data, stratified_split_data, strip_sample_id
 from env import Environment
 from memory import ReplayMemory
 from model import build_q_network
@@ -26,11 +26,11 @@ def build_parser():
     parser.add_argument("-batch", type=int, dest="batch_size", default=64)
     parser.add_argument("-mem_capacity", type=int, dest="mem_capacity", default=10000)
     parser.add_argument("-gamma", type=float, dest="gamma", default=0.95)
-    parser.add_argument("-eps_start", type=float, dest="eps_start", default=0.02)
-    parser.add_argument("-eps_end", type=float, dest="eps_end", default=0)
-    parser.add_argument("-eps_decay", type=int, dest="eps_decay", default=4000)
-    parser.add_argument("-tau", type=float, dest="tau", default=0.005)
-    parser.add_argument("-lr", type=float, dest="lr", default=0.0002)
+    parser.add_argument("-eps_start", type=float, dest="eps_start", default=0.7)
+    parser.add_argument("-eps_end", type=float, dest="eps_end", default=0.02)
+    parser.add_argument("-eps_decay", type=int, dest="eps_decay", default=10000)
+    parser.add_argument("-tau", type=float, dest="tau", default=0.01)
+    parser.add_argument("-lr", type=float, dest="lr", default=0.0003)
     parser.add_argument("-weight_decay", type=float, dest="weight_decay", default=1e-4)
     parser.add_argument("-nn_units", type=int, dest="nn_units", default=256)
     parser.add_argument("-nn_units2", type=int, dest="nn_units2", default=128)
@@ -39,21 +39,27 @@ def build_parser():
         "-model_type", choices=['dqn_legacy', 'dqn', 'dueling', 'dueling_residual', 'set_dueling', 'set_dueling_noisy'],
         dest="model_type", default='set_dueling_noisy'
     )
-    parser.add_argument("-aux_supervised_weight", type=float, dest="aux_supervised_weight", default=0.05)
-    parser.add_argument("-aux_supervised_start", type=float, dest="aux_supervised_start", default=0.5)
-    parser.add_argument("-aux_pos_weight_max", type=float, dest="aux_pos_weight_max", default=20.0)
-    parser.add_argument("-pretrain_anchor_weight", type=float, dest="pretrain_anchor_weight", default=1e-4)
+    parser.add_argument("-aux_supervised_weight", type=float, dest="aux_supervised_weight", default=0.03)
+    parser.add_argument("-aux_supervised_start", type=float, dest="aux_supervised_start", default=0.15)
+    parser.add_argument("-aux_pos_weight_max", type=float, dest="aux_pos_weight_max", default=8.0)
+    parser.add_argument("-pretrain_pos_weight_max", type=float, dest="pretrain_pos_weight_max", default=18.0)
+    parser.add_argument("-pretrain_anchor_weight", type=float, dest="pretrain_anchor_weight", default=0.0)
     parser.add_argument("-pretrain_all_permutations", type=int, dest="pretrain_all_permutations", default=2)
     parser.add_argument("-seed", type=int, dest="seed", default=9)
     parser.add_argument("-max_se_num", type=int, dest="max_Se_num", default=0)
     parser.add_argument("-use_pretrain", type=int, dest="use_pretrain", default=1)
-    parser.add_argument("-pretrain_epochs", type=int, dest="pretrain_epochs", default=20)
+    parser.add_argument("-pretrain_epochs", type=int, dest="pretrain_epochs", default=5)  # 降低到5，让预训练"记不住"稀有标签，给好奇心机制发挥空间
     parser.add_argument("-pretrain_lr", type=float, dest="pretrain_lr", default=0.001)
     parser.add_argument("-replay_warmup", type=int, dest="replay_warmup", default=1)
     parser.add_argument("-test_ratio", type=float, dest="test_ratio", default=0.2)
-    parser.add_argument("-reward_mode", choices=['legacy', 'potential_f1'], dest="reward_mode", default='potential_f1')
+    parser.add_argument(
+        "-reward_mode",
+        choices=['legacy', 'potential_f1', 'macro_balanced', 'tail_cost_curiosity'],
+        dest="reward_mode", default='tail_cost_curiosity'
+    )
     parser.add_argument("-step_penalty", type=float, dest="step_penalty", default=None)
     parser.add_argument("-false_positive_penalty", type=float, dest="false_positive_penalty", default=None)
+    parser.add_argument("-false_positive_penalty_start", type=float, dest="false_positive_penalty_start", default=None)
     parser.add_argument("-over_select_penalty", type=float, dest="over_select_penalty", default=None)
     parser.add_argument("-potential_baseline", type=float, dest="potential_baseline", default=None)
     parser.add_argument("-cardinality_penalty", type=float, dest="cardinality_penalty", default=None)
@@ -63,6 +69,27 @@ def build_parser():
     parser.add_argument("-stop_fp_penalty", type=float, dest="stop_fp_penalty", default=None)
     parser.add_argument("-terminal_cardinality_penalty", type=float, dest="terminal_cardinality_penalty", default=None)
     parser.add_argument("-tp_weight_scale", type=float, dest="tp_weight_scale", default=None)
+    parser.add_argument("-fp_weight_scale", type=float, dest="fp_weight_scale", default=None)
+    parser.add_argument("-rare_tp_bonus", type=float, dest="rare_tp_bonus", default=None)
+    parser.add_argument("-rare_tp_bonus_start", type=float, dest="rare_tp_bonus_start", default=None)
+    parser.add_argument("-rare_tp_bonus_end", type=float, dest="rare_tp_bonus_end", default=None)
+    parser.add_argument("-rare_fn_penalty", type=float, dest="rare_fn_penalty", default=None)
+    parser.add_argument("-balanced_beta", type=float, dest="balanced_beta", default=None)
+    parser.add_argument("-terminal_sample_f1_weight", type=float, dest="terminal_sample_f1_weight", default=None)
+    parser.add_argument("-terminal_balanced_f1_weight", type=float, dest="terminal_balanced_f1_weight", default=None)
+    parser.add_argument("-uncertainty_tp_bonus", type=float, dest="uncertainty_tp_bonus", default=None)
+    parser.add_argument("-pretrain_miss_tp_bonus", type=float, dest="pretrain_miss_tp_bonus", default=None)
+    parser.add_argument("-uncertainty_potential_scale", type=float, dest="uncertainty_potential_scale", default=None)
+    parser.add_argument("-terminal_tail_recall_bonus", type=float, dest="terminal_tail_recall_bonus", default=None)
+    parser.add_argument("-pretrain_miss_fn_penalty", type=float, dest="pretrain_miss_fn_penalty", default=None)
+    parser.add_argument("-exploration_tp_bonus", type=float, dest="exploration_tp_bonus", default=None)  # 探索奖励
+    parser.add_argument("-f1_log_gain", type=float, dest="f1_log_gain", default=None)
+    parser.add_argument("-over_select_penalty_power", type=float, dest="over_select_penalty_power", default=None)
+    parser.add_argument("-terminal_under_select_penalty", type=float, dest="terminal_under_select_penalty", default=None)
+    parser.add_argument("-support_confidence_min", type=float, dest="support_confidence_min", default=None)
+    parser.add_argument("-support_confidence_k", type=float, dest="support_confidence_k", default=None)
+    parser.add_argument("-Se_weight_method", choices=['power', 'log'], dest="Se_weight_method", default='log')
+    parser.add_argument("-Se_weight_log_scale", type=float, dest="Se_weight_log_scale", default=0.65)
     parser.add_argument("-target_update_strategy", choices=['hard', 'soft'], dest="target_update_strategy", default='soft')
     parser.add_argument("-target_update_interval", type=int, dest="target_update_interval", default=1)
     parser.add_argument("-use_per", type=int, dest="use_per", default=1)
@@ -75,12 +102,14 @@ def build_parser():
     parser.add_argument("-use_curriculum", type=int, dest="use_curriculum", default=1)
     parser.add_argument("-curriculum_stage1", type=float, dest="curriculum_stage1", default=0.3)
     parser.add_argument("-curriculum_stage2", type=float, dest="curriculum_stage2", default=0.6)
-    parser.add_argument("-min_actions_before_stop", type=int, dest="min_actions_before_stop", default=1)
+    parser.add_argument("-min_actions_before_stop", type=int, dest="min_actions_before_stop", default=2)
     parser.add_argument("-stop_margin_threshold", type=float, dest="stop_margin_threshold", default=None)
-    parser.add_argument("-rare_priority_scale", type=float, dest="rare_priority_scale", default=0.5)
-    parser.add_argument("-Se_weight_min", type=float, dest="Se_weight_min", default=0.75)
-    parser.add_argument("-Se_weight_max", type=float, dest="Se_weight_max", default=2.5)
-    parser.add_argument("-Se_weight_power", type=float, dest="Se_weight_power", default=0.5)
+    parser.add_argument("-rare_priority_scale", type=float, dest="rare_priority_scale", default=1.1)
+    parser.add_argument("-pretrain_miss_priority_scale", type=float, dest="pretrain_miss_priority_scale", default=0.7)
+    parser.add_argument("-refresh_hints_interval", type=int, dest="refresh_hints_interval", default=10)  # 每N次迭代更新一次pretrain_hints，让好奇心机制适应网络变化
+    parser.add_argument("-Se_weight_min", type=float, dest="Se_weight_min", default=0.6)
+    parser.add_argument("-Se_weight_max", type=float, dest="Se_weight_max", default=6.0)
+    parser.add_argument("-Se_weight_power", type=float, dest="Se_weight_power", default=0.85)
     parser.add_argument("-patience", type=int, dest="patience", default=15, help="保留兼容参数；当前版本不再用测试集早停")
     parser.add_argument("-min_delta", type=float, dest="min_delta", default=0.001, help="保留兼容参数；当前版本不再用测试集早停")
     return parser
@@ -104,10 +133,16 @@ def main():
     env = Environment(symptoms, Se)
     reward_kwargs = {'mode': args.reward_mode, 'shaping_gamma': args.gamma}
     for key in (
-        'step_penalty', 'false_positive_penalty', 'over_select_penalty',
-        'potential_baseline', 'cardinality_penalty', 'terminal_f1_scale', 'exact_match_bonus',
-        'stop_fn_penalty', 'stop_fp_penalty', 'terminal_cardinality_penalty',
-        'tp_weight_scale',
+        'step_penalty', 'false_positive_penalty', 'false_positive_penalty_start',
+        'over_select_penalty', 'potential_baseline', 'cardinality_penalty',
+        'terminal_f1_scale', 'exact_match_bonus', 'stop_fn_penalty', 'stop_fp_penalty',
+        'terminal_cardinality_penalty', 'tp_weight_scale', 'fp_weight_scale',
+        'rare_tp_bonus', 'rare_tp_bonus_start', 'rare_tp_bonus_end', 'rare_fn_penalty',
+        'balanced_beta', 'terminal_sample_f1_weight', 'terminal_balanced_f1_weight',
+        'uncertainty_tp_bonus', 'pretrain_miss_tp_bonus', 'uncertainty_potential_scale',
+        'terminal_tail_recall_bonus', 'pretrain_miss_fn_penalty', 'exploration_tp_bonus',
+        'f1_log_gain', 'over_select_penalty_power', 'terminal_under_select_penalty',
+        'support_confidence_min', 'support_confidence_k',
     ):
         value = getattr(args, key)
         if value is not None:
@@ -126,8 +161,11 @@ def main():
     test_tcm_data = strip_sample_id(test_tcm_data_raw)
     env.set_Se_weights(compute_Se_weights(
         training_tcm_data, env, logger=logger,
-        min_weight=args.Se_weight_min, max_weight=args.Se_weight_max, power=args.Se_weight_power
+        min_weight=args.Se_weight_min, max_weight=args.Se_weight_max,
+        power=args.Se_weight_power, method=args.Se_weight_method,
+        log_scale=args.Se_weight_log_scale,
     ))
+    env.set_Se_supports(compute_Se_supports(training_tcm_data, env, logger=logger))
 
     logger.info(f"训练数据数量:{len(training_tcm_data)}, 测试数据数量:{len(test_tcm_data)}, 测试集比例:{args.test_ratio:.2f}")
     logger.info(f"最大真实证候要素数:{max_Se_len}")
@@ -151,9 +189,12 @@ def main():
         f"dropout={args.dropout}, model_type={args.model_type}, pretrain={args.use_pretrain}, "
         f"warmup={args.replay_warmup}, aux_supervised_weight={args.aux_supervised_start}->{args.aux_supervised_weight}, "
         f"pretrain_all_permutations={args.pretrain_all_permutations}, test_ratio={args.test_ratio}, "
+        f"Se_weight={args.Se_weight_method}:{args.Se_weight_min}-{args.Se_weight_max}/"
+        f"p{args.Se_weight_power}/log{args.Se_weight_log_scale}, "
         f"reward={args.reward_mode}, use_per={args.use_per}, per_alpha={args.per_alpha}, "
         f"per_beta={args.per_beta_start}->1.0/{args.per_beta_frames}, n_step={args.n_step}, "
-        f"curriculum={args.use_curriculum}, stop_margin_threshold={args.stop_margin_threshold}"
+        f"curriculum={args.use_curriculum}, stop_margin_threshold={args.stop_margin_threshold}, "
+        f"pretrain_miss_priority_scale={args.pretrain_miss_priority_scale}"
     )
     logger.info(f"奖励配置: {env.reward_config}")
 
@@ -165,9 +206,10 @@ def main():
         args.target_update_strategy, args.target_update_interval,
         args.per_beta_start, args.per_beta_frames, args.priority_clip,
         args.optimize_interval, args.n_step, args.aux_supervised_start,
-        args.aux_pos_weight_max, args.pretrain_anchor_weight,
+        args.aux_pos_weight_max, args.pretrain_pos_weight_max, args.pretrain_anchor_weight,
         bool(args.use_curriculum), args.curriculum_stage1, args.curriculum_stage2,
-        args.min_actions_before_stop, args.stop_margin_threshold, args.rare_priority_scale
+        args.min_actions_before_stop, args.stop_margin_threshold, args.rare_priority_scale,
+        args.pretrain_miss_priority_scale, args.refresh_hints_interval
     )
 
     if args.use_pretrain:
@@ -184,13 +226,10 @@ def main():
         f"测试集-自主停止: sample_f1={test_metrics['auto']['sample_f1']:.4f}, "
         f"exact_match={test_metrics['auto']['exact_match']:.4f}, "
         f"micro_f1={test_metrics['auto']['micro_f1']:.4f}, "
-        f"macro_f1={test_metrics['auto']['macro_f1']:.4f}"
-    )
-    logger.info(
-        f"测试集-Top-2: sample_f1={test_metrics['top2']['sample_f1']:.4f}, "
-        f"exact_match={test_metrics['top2']['exact_match']:.4f}, "
-        f"micro_f1={test_metrics['top2']['micro_f1']:.4f}, "
-        f"macro_f1={test_metrics['top2']['macro_f1']:.4f}"
+        f"macro_f1={test_metrics['auto']['macro_f1']:.4f}, "
+        f"supported_macro_f1={test_metrics['auto'].get('supported_macro_f1', 0.0):.4f}, "
+        f"勿选率={test_metrics['auto'].get('false_selection_rate', 0.0):.4f}, "
+        f"漏选率={test_metrics['auto'].get('miss_selection_rate', 0.0):.4f}"
     )
 
     training_config = {
@@ -208,6 +247,7 @@ def main():
         'aux_supervised_start': args.aux_supervised_start,
         'aux_supervised_weight': args.aux_supervised_weight,
         'aux_pos_weight_max': args.aux_pos_weight_max,
+        'pretrain_pos_weight_max': args.pretrain_pos_weight_max,
         'pretrain_anchor_weight': args.pretrain_anchor_weight,
         'pretrain_all_permutations': args.pretrain_all_permutations,
         'use_curriculum': bool(args.use_curriculum),
@@ -216,9 +256,12 @@ def main():
         'min_actions_before_stop': args.min_actions_before_stop,
         'stop_margin_threshold': args.stop_margin_threshold,
         'rare_priority_scale': args.rare_priority_scale,
+        'pretrain_miss_priority_scale': args.pretrain_miss_priority_scale,
         'Se_weight_min': args.Se_weight_min,
         'Se_weight_max': args.Se_weight_max,
         'Se_weight_power': args.Se_weight_power,
+        'Se_weight_method': args.Se_weight_method,
+        'Se_weight_log_scale': args.Se_weight_log_scale,
     }
     model_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = save_checkpoint(
@@ -228,12 +271,6 @@ def main():
     )
     print(f"模型已保存至: {model_path}")
     # print(f"测试集自主停止sample_f1={test_metrics['auto']['sample_f1']:.4f}")
-
-    # symptoms_str = '胸闷,胸痛,畏寒,纳呆,睡后易醒,大便艰难,舌淡,舌边齿痕,舌苔白,舌苔薄,细脉,弱脉'
-    # predicted_Se = trainer.predict_symptoms(symptoms_str)
-    # predicted_Se_top2 = trainer.predict_symptoms(symptoms_str, force_top_k=2, max_actions=2)
-    # print(f'推荐证候要素(自主停止): {",".join(predicted_Se) if predicted_Se else "无"}')
-    # print(f'推荐证候要素(固定Top-2诊断): {",".join(predicted_Se_top2) if predicted_Se_top2 else "无"}')
 
 
 if __name__ == "__main__":

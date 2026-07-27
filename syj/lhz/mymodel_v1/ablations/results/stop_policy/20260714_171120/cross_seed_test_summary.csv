@@ -1,0 +1,4 @@
+﻿experiment,completed_seeds,sample_f1_mean,sample_f1_std,micro_f1_mean,micro_f1_std,macro_f1_mean,macro_f1_std,supported_macro_f1_mean,supported_macro_f1_std,exact_match_mean,exact_match_std,miss_selection_rate_mean,miss_selection_rate_std,zero_f1_count_mean,zero_f1_count_std
+min_actions_0,0,,,,,,,,,,,,,,
+min_actions_1,0,,,,,,,,,,,,,,
+min_actions_2,0,,,,,,,,,,,,,,
