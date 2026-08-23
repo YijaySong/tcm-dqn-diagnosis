@@ -1,0 +1,10 @@
+﻿experiment,seed,status,sample_f1,micro_f1,macro_f1,supported_macro_f1,exact_match,miss_selection_rate,zero_f1_count
+minimal_weighted_fbeta,9,failed,,,,,,,
+minimal_weighted_fbeta,17,failed,,,,,,,
+minimal_weighted_fbeta,29,failed,,,,,,,
+no_step_cost,9,failed,,,,,,,
+no_step_cost,17,failed,,,,,,,
+no_step_cost,29,failed,,,,,,,
+no_label_reweight,9,failed,,,,,,,
+no_label_reweight,17,failed,,,,,,,
+no_label_reweight,29,failed,,,,,,,

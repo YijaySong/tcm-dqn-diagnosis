@@ -1,0 +1,5 @@
+﻿frequency_band,label_count,eval_supported_label_count,macro_f1,macro_recall,zero_f1_count,never_predicted_count
+rare_1_4,2,2,0.0,0.0,2,1
+few_5_19,6,6,0.617948717948718,0.5611111111111111,0,0
+medium_20_99,2,2,0.3471986417657046,0.484375,0,0
+head_100_plus,8,8,0.7195389391293876,0.7748988288543177,0,0

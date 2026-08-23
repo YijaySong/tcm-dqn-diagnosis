@@ -1,0 +1,85 @@
+{
+  "protocol_version": "symptom_group_v1",
+  "limitation": "症状组互斥划分不是患者级独立划分；数据源不含患者/病例ID。",
+  "data_path": "/Users/yy/Desktop/博士期间/自己的/论文二_强化学习辨证/代码/8.13RL/dataset/lhz_data_cleaned.txt",
+  "data_sha256": "6b39689d3f6ee3f0e7a6d298b38b45566f0d2985f5a7fdf3861461f9b04482a8",
+  "split_seed": 2026,
+  "ratios": {
+    "train": 0.7,
+    "validation": 0.15,
+    "test": 0.15
+  },
+  "raw_record_count": 2493,
+  "split_record_counts": {
+    "train": 1745,
+    "validation": 374,
+    "test": 374
+  },
+  "split_group_counts": {
+    "train": 986,
+    "validation": 315,
+    "test": 282
+  },
+  "training_vocabulary": {
+    "symptom_count": 369,
+    "label_count": 18,
+    "labels": [
+      "气虚",
+      "血瘀",
+      "痰浊",
+      "阴虚",
+      "气滞",
+      "阳虚",
+      "热蕴",
+      "寒凝",
+      "肾虚",
+      "心脾两虚",
+      "虚热",
+      "内热",
+      "湿热",
+      "心阳虚",
+      "肾阳虚",
+      "郁热",
+      "痰瘀互结",
+      "胃气上逆"
+    ],
+    "label_support": {
+      "气虚": 1255,
+      "血瘀": 1145,
+      "痰浊": 903,
+      "阴虚": 897,
+      "气滞": 833,
+      "阳虚": 477,
+      "热蕴": 192,
+      "寒凝": 119,
+      "肾虚": 49,
+      "心脾两虚": 34,
+      "虚热": 13,
+      "内热": 12,
+      "湿热": 8,
+      "心阳虚": 5,
+      "肾阳虚": 5,
+      "郁热": 5,
+      "痰瘀互结": 4,
+      "胃气上逆": 3
+    }
+  },
+  "transform_stats": {
+    "train": {
+      "input_records": 1745,
+      "output_records": 1745
+    },
+    "validation": {
+      "samples_with_oov_symptoms": 18,
+      "oov_symptom_occurrences": 19,
+      "input_records": 374,
+      "output_records": 374
+    },
+    "test": {
+      "samples_with_oov_symptoms": 19,
+      "oov_symptom_occurrences": 19,
+      "input_records": 374,
+      "output_records": 374
+    }
+  }
+}

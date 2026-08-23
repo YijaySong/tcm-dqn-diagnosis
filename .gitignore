@@ -29,9 +29,19 @@ dataset/*.xlsx
 # 图表
 *.png
 *.jpg
+*.pdf
 
 # Claude 配置
 .claude/*
 !.claude/skills/
 !.claude/skills/**
 .claude/skills/**/artifacts/
+
+# superpower log
+docs/
+
+# 嵌入的第三方仓库
+syj/lhz/papers/BTR/
+syj/lhz/papers/dopamine/
+syj/lhz/papers/stable-baselines3/
+syj/lhz/papers/Deep-Reinforcement-Learning-for-Cost-Effective-Medical-Diagnosis/

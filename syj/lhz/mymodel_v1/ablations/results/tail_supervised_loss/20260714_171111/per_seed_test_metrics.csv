@@ -1,0 +1,10 @@
+﻿experiment,seed,status,sample_f1,micro_f1,macro_f1,supported_macro_f1,exact_match,miss_selection_rate,zero_f1_count
+plain_bce,9,failed,,,,,,,
+plain_bce,17,failed,,,,,,,
+plain_bce,29,failed,,,,,,,
+class_balanced_bce,9,failed,,,,,,,
+class_balanced_bce,17,failed,,,,,,,
+class_balanced_bce,29,failed,,,,,,,
+focal_bce,9,failed,,,,,,,
+focal_bce,17,failed,,,,,,,
+focal_bce,29,failed,,,,,,,
